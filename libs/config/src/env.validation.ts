@@ -1,0 +1,40 @@
+import Joi from 'joi';
+import { Environment } from '@app/contracts';
+
+export const environmentSchema = Joi.object({
+  NODE_ENV: Joi.string()
+    .valid(...Object.values(Environment))
+    .default(Environment.DEVELOPMENT),
+  AUTH_API_PORT: Joi.number().port().default(4001),
+  MAIN_API_PORT: Joi.number().port().default(4002),
+  CORS_ORIGINS: Joi.string().allow('').default(''),
+  MYSQL_HOST: Joi.string().required(),
+  MYSQL_PORT: Joi.number().port().default(3306),
+  MYSQL_USERNAME: Joi.string().required(),
+  MYSQL_PASSWORD: Joi.string().required(),
+  MYSQL_DATABASE: Joi.string().required(),
+  JWT_ACCESS_SECRET: Joi.string().min(32).required(),
+  JWT_ACCESS_EXPIRES_IN: Joi.string().default('15m'),
+  JWT_REFRESH_SECRET: Joi.string().min(32).required(),
+  JWT_REFRESH_EXPIRES_IN: Joi.string().default('7d'),
+  OTP_TTL_MINUTES: Joi.number().integer().positive().default(10),
+  OTP_MAX_ATTEMPTS: Joi.number().integer().positive().default(5),
+  PAGINATION_MAX_LIMIT: Joi.number().integer().min(1).max(500).default(100),
+  DEFAULT_DELIVERY_FEE: Joi.number().min(0).default(0),
+  DEFAULT_PLATFORM_FEE: Joi.number().min(0).default(0),
+  DEFAULT_TAX_RATE_PERCENT: Joi.number().min(0).max(100).default(0),
+  RAZORPAY_KEY_ID: Joi.string().allow(''),
+  RAZORPAY_KEY_SECRET: Joi.string().allow(''),
+  RAZORPAY_WEBHOOK_SECRET: Joi.string().allow(''),
+  CLOUDINARY_CLOUD_NAME: Joi.string().allow(''),
+  CLOUDINARY_API_KEY: Joi.string().allow(''),
+  CLOUDINARY_API_SECRET: Joi.string().allow(''),
+  SMTP_HOST: Joi.string().allow(''),
+  SMTP_PORT: Joi.number().port().default(587),
+  SMTP_USERNAME: Joi.string().allow(''),
+  SMTP_PASSWORD: Joi.string().allow(''),
+  SMTP_FROM: Joi.string().allow(''),
+  GOOGLE_MAPS_API_KEY: Joi.string().allow(''),
+  FRONTEND_CUSTOMER_URL: Joi.string().uri().allow(''),
+  FRONTEND_DASHBOARD_URL: Joi.string().uri().allow(''),
+});

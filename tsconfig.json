@@ -1,0 +1,64 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "resolvePackageJsonExports": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "types": [
+      "vitest/globals",
+      "node"
+    ],
+    "paths": {
+      "@app/common": [
+        "./libs/common/src/index.ts"
+      ],
+      "@app/common/*": [
+        "./libs/common/src/*"
+      ],
+      "@app/database": [
+        "./libs/database/src/index.ts"
+      ],
+      "@app/database/*": [
+        "./libs/database/src/*"
+      ],
+      "@app/storage": [
+        "./libs/storage/src/index.ts"
+      ],
+      "@app/storage/*": [
+        "./libs/storage/src/*"
+      ],
+      "@app/contracts": ["./libs/contracts/src/index.ts"],
+      "@app/contracts/*": ["./libs/contracts/src/*"],
+      "@app/config": ["./libs/config/src/index.ts"],
+      "@app/config/*": ["./libs/config/src/*"],
+      "@app/auth": ["./libs/auth/src/index.ts"],
+      "@app/auth/*": ["./libs/auth/src/*"]
+      ,"@app/integrations": ["./libs/integrations/src/index.ts"]
+      ,"@app/integrations/*": ["./libs/integrations/src/*"]
+    }
+  },
+  "files": [],
+  "references": [
+    {
+      "path": "./apps/auth-api/tsconfig.app.json"
+    },
+    {
+      "path": "./apps/main-api/tsconfig.app.json"
+    }
+  ]
+}
