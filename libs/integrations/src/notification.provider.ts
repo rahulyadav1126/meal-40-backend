@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import nodemailer from 'nodemailer';
+import type { Transporter } from 'nodemailer';
 export interface EmailMessage {
   to: string;
   subject: string;
@@ -19,19 +20,23 @@ export interface SmsProvider {
 }
 @Injectable()
 export class NodemailerEmailProvider implements EmailProvider {
-  constructor(private readonly config: ConfigService) {}
-  async send(message: EmailMessage): Promise<void> {
-    const transport = nodemailer.createTransport({
-      host: this.config.getOrThrow<string>('SMTP_HOST'),
-      port: Number(this.config.getOrThrow<number>('SMTP_PORT')),
-      secure: Number(this.config.get<number>('SMTP_PORT')) === 465,
+  private readonly transport: Transporter;
+
+  constructor(private readonly config: ConfigService) {
+    this.transport = nodemailer.createTransport({
+      host: this.config.getOrThrow<string>('mail.host'),
+      port: this.config.getOrThrow<number>('mail.port'),
+      secure: this.config.getOrThrow<boolean>('mail.secure'),
       auth: {
-        user: this.config.getOrThrow<string>('SMTP_USERNAME'),
-        pass: this.config.getOrThrow<string>('SMTP_PASSWORD'),
+        user: this.config.getOrThrow<string>('mail.username'),
+        pass: this.config.getOrThrow<string>('mail.password'),
       },
     });
-    await transport.sendMail({
-      from: this.config.getOrThrow<string>('SMTP_FROM'),
+  }
+
+  async send(message: EmailMessage): Promise<void> {
+    await this.transport.sendMail({
+      from: this.config.getOrThrow<string>('mail.from'),
       ...message,
     });
   }

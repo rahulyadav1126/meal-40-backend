@@ -7,6 +7,11 @@ import { CartEntity } from './carts/cart.entity.js';
 import { CategoryEntity } from './categories/category.entity.js';
 import { CouponUsageEntity } from './coupon-usages/coupon-usage.entity.js';
 import { CouponEntity } from './coupons/coupon.entity.js';
+import { EmailTemplateEntity } from './email-templates/email-template.entity.js';
+import { DeliveryPartnerEntity } from './delivery-partners/delivery-partner.entity.js';
+import { DeliveryPartnerDocumentEntity } from './delivery-partner-documents/delivery-partner-document.entity.js';
+import { DeliveryEntity } from './deliveries/delivery.entity.js';
+import { DeliveryEarningEntity } from './delivery-earnings/delivery-earning.entity.js';
 import { MenuItemEntity } from './menu-items/menu-item.entity.js';
 import { NotificationEntity } from './notifications/notification.entity.js';
 import { OrderItemEntity } from './order-items/order-item.entity.js';
@@ -30,6 +35,11 @@ export * from './carts/cart.entity.js';
 export * from './categories/category.entity.js';
 export * from './coupon-usages/coupon-usage.entity.js';
 export * from './coupons/coupon.entity.js';
+export * from './email-templates/email-template.entity.js';
+export * from './delivery-partners/delivery-partner.entity.js';
+export * from './delivery-partner-documents/delivery-partner-document.entity.js';
+export * from './deliveries/delivery.entity.js';
+export * from './delivery-earnings/delivery-earning.entity.js';
 export * from './menu-items/menu-item.entity.js';
 export * from './notifications/notification.entity.js';
 export * from './order-items/order-item.entity.js';
@@ -58,6 +68,11 @@ export const ENTITIES = [
   CartEntity,
   CartItemEntity,
   CouponEntity,
+  EmailTemplateEntity,
+  DeliveryPartnerEntity,
+  DeliveryPartnerDocumentEntity,
+  DeliveryEntity,
+  DeliveryEarningEntity,
   OrderEntity,
   OrderItemEntity,
   OrderStatusHistoryEntity,

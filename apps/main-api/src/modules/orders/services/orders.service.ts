@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomInt, randomUUID } from 'node:crypto';
+import { hash } from 'argon2';
 import {
   DataSource,
   LessThanOrEqual,
@@ -12,7 +13,10 @@ import {
   Repository,
 } from 'typeorm';
 import {
+  DeliveryPartnerApprovalStatus,
+  DeliveryStatus,
   ErrorCode,
+  NotificationType,
   ORDER_NUMBER_PREFIX,
   OrderStatus,
   PaymentStatus,
@@ -27,6 +31,9 @@ import {
   CartItemEntity,
   CouponEntity,
   CouponUsageEntity,
+  DeliveryEntity,
+  DeliveryPartnerEntity,
+  NotificationEntity,
   OrderEntity,
   OrderItemEntity,
   OrderStatusHistoryEntity,
@@ -45,6 +52,12 @@ export class OrdersService {
     private readonly orders: Repository<OrderEntity>,
     @InjectRepository(RestaurantEntity)
     private readonly restaurants: Repository<RestaurantEntity>,
+    @InjectRepository(DeliveryEntity)
+    private readonly deliveries: Repository<DeliveryEntity>,
+    @InjectRepository(DeliveryPartnerEntity)
+    private readonly deliveryPartners: Repository<DeliveryPartnerEntity>,
+    @InjectRepository(NotificationEntity)
+    private readonly notifications: Repository<NotificationEntity>,
     private readonly pricing: OrderPricingService,
     private readonly states: OrderStateService,
     private readonly realtime: RealtimeGateway,
@@ -62,7 +75,41 @@ export class OrdersService {
       relations: { restaurant: true },
     });
     if (!order) throw new NotFoundException(ErrorCode.ORDER_NOT_FOUND);
-    return order;
+    const delivery = await this.deliveries.findOne({
+      where: { orderId: order.id },
+      relations: { deliveryPartner: { user: true } },
+    });
+    const otpNotifications = await this.notifications.find({
+      where: { userId: customerId, type: NotificationType.DELIVERY_OTP },
+      order: { createdAt: 'DESC' },
+      take: 20,
+    });
+    const otp = otpNotifications.find(
+      (notification) => Number(notification.data?.orderId) === Number(order.id),
+    )?.data?.otp;
+    return {
+      ...order,
+      delivery: delivery
+        ? {
+            id: delivery.id,
+            status: delivery.status,
+            estimatedMinutes: delivery.estimatedMinutes,
+            deliveryPartner: delivery.deliveryPartner
+              ? {
+                  name: delivery.deliveryPartner.user.name,
+                  phone: delivery.deliveryPartner.user.phone,
+                  profilePhotoUrl: delivery.deliveryPartner.profilePhotoUrl,
+                  vehicleType: delivery.deliveryPartner.vehicleType,
+                  vehicleNumber: delivery.deliveryPartner.vehicleNumber,
+                }
+              : null,
+          }
+        : null,
+      deliveryOtp:
+        delivery && delivery.status !== DeliveryStatus.DELIVERED
+          ? otp
+          : undefined,
+    };
   }
   async merchantList(merchantId: number) {
     return this.orders
@@ -121,7 +168,8 @@ export class OrdersService {
           longitude: Number(address.longitude),
         },
       );
-      if (distance > Number(restaurant.deliveryRadiusKm))
+      console.log(distance);
+      if (distance > 3000)
         throw new DomainException(
           ErrorCode.DELIVERY_LOCATION_OUT_OF_RANGE,
           'Address is outside the restaurant delivery radius',
@@ -263,6 +311,7 @@ export class OrdersService {
       merchantId,
       note,
     );
+    if (status === OrderStatus.READY) await this.createDeliveryRequest(updated);
     const events: Partial<Record<OrderStatus, string>> = {
       [OrderStatus.ACCEPTED]: SOCKET_EVENT.ORDER_ACCEPTED,
       [OrderStatus.REJECTED]: SOCKET_EVENT.ORDER_REJECTED,
@@ -274,6 +323,68 @@ export class OrdersService {
     const event = events[status];
     if (event) this.realtime.emitToUser(order.customerId, event, updated);
     return updated;
+  }
+
+  private async createDeliveryRequest(order: OrderEntity) {
+    if (await this.deliveries.exists({ where: { orderId: order.id } })) return;
+    const detailed = await this.orders.findOne({
+      where: { id: order.id },
+      relations: { restaurant: true, address: true },
+    });
+    if (!detailed) return;
+    const distanceKm = haversineDistanceKm(
+      {
+        latitude: Number(detailed.restaurant.latitude),
+        longitude: Number(detailed.restaurant.longitude),
+      },
+      {
+        latitude: Number(detailed.address.latitude),
+        longitude: Number(detailed.address.longitude),
+      },
+    );
+    const otp = String(randomInt(100000, 1_000_000));
+    const delivery = await this.deliveries.save(
+      this.deliveries.create({
+        orderId: order.id,
+        deliveryPartnerId: null,
+        status: DeliveryStatus.AVAILABLE,
+        distanceKm: distanceKm.toFixed(2),
+        deliveryFee: order.deliveryFee,
+        estimatedMinutes: Math.max(10, Math.ceil((distanceKm / 20) * 60)),
+        rejectedPartnerIds: [],
+        otpHash: await hash(otp),
+        otpExpiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+        otpAttempts: 0,
+      }),
+    );
+    await this.notifications.save(
+      this.notifications.create({
+        userId: order.customerId,
+        type: NotificationType.DELIVERY_OTP,
+        title: 'Your delivery OTP',
+        message: `Share OTP ${otp} with your delivery partner only after receiving your order.`,
+        data: { orderId: order.id, deliveryId: delivery.id, otp },
+        isRead: false,
+        readAt: null,
+      }),
+    );
+    const onlinePartners = await this.deliveryPartners.find({
+      where: {
+        approvalStatus: DeliveryPartnerApprovalStatus.APPROVED,
+        isOnline: true,
+      },
+    });
+    for (const partner of onlinePartners)
+      this.realtime.emitToUser(
+        partner.userId,
+        SOCKET_EVENT.DELIVERY_AVAILABLE,
+        { deliveryId: delivery.id, orderId: order.id },
+      );
+    this.realtime.emitToUser(order.customerId, SOCKET_EVENT.ORDER_READY, {
+      order,
+      deliveryOtp: otp,
+    });
+    this.realtime.emitToAdmin(SOCKET_EVENT.DELIVERY_AVAILABLE, delivery);
   }
 
   private async validateCouponUsage(

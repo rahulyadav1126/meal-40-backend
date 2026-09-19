@@ -2,7 +2,12 @@ import { Body, Controller, Headers, Ip, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { Public } from '@app/auth';
 import { AuthService } from './auth.service.js';
-import { LoginDto, RefreshTokenDto, RegisterDto } from './dto/auth.dto.js';
+import {
+  DeliveryPartnerRegisterDto,
+  LoginDto,
+  RefreshTokenDto,
+  RegisterDto,
+} from './dto/auth.dto.js';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -14,6 +19,13 @@ export class AuthController {
     @Headers('user-agent') userAgent?: string,
   ) {
     return this.auth.register(dto, { ipAddress, userAgent });
+  }
+  @Public() @Post('delivery/register') deliveryRegister(
+    @Body() dto: DeliveryPartnerRegisterDto,
+    @Ip() ipAddress: string,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    return this.auth.registerDeliveryPartner(dto, { ipAddress, userAgent });
   }
   @Public() @Post('login') login(
     @Body() dto: LoginDto,

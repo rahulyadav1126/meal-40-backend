@@ -23,8 +23,8 @@ export class CreateMenuItemDto {
   @IsNumberString() @IsOptional() discountedPrice?: string;
   @IsInt() @Min(1) preparationTimeMinutes: number;
   @IsInt() @Min(0) @IsOptional() displayOrder?: number;
+  @IsBoolean() @IsOptional() isAvailable?: boolean;
 }
 export class UpdateMenuItemDto extends PartialType(CreateMenuItemDto) {
-  @IsBoolean() @IsOptional() isAvailable?: boolean;
   @IsBoolean() @IsOptional() isFeatured?: boolean;
 }

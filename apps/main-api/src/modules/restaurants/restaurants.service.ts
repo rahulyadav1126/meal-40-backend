@@ -88,7 +88,7 @@ export class RestaurantsService {
         country: DEFAULT_COUNTRY,
         approvalStatus: RestaurantApprovalStatus.PENDING,
         openingStatus: RestaurantOpeningStatus.CLOSED,
-        isActive: true,
+        isActive: false,
       }),
     );
   }

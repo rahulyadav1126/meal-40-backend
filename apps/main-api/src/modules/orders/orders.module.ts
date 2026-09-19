@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
+  DeliveryEntity,
+  DeliveryPartnerEntity,
+  NotificationEntity,
   OrderEntity,
   OrderStatusHistoryEntity,
   RestaurantEntity,
@@ -16,6 +19,9 @@ import { OrdersService } from './services/orders.service.js';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      DeliveryEntity,
+      DeliveryPartnerEntity,
+      NotificationEntity,
       OrderEntity,
       OrderStatusHistoryEntity,
       RestaurantEntity,

@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
 import { Repository } from 'typeorm';
 import { MenuItemEntity, RestaurantEntity } from '@app/database';
+import { CloudinaryFileStorageProvider } from '@app/integrations';
 import { RestaurantsService } from '../restaurants/restaurants.service.js';
 import type { CreateMenuItemDto, UpdateMenuItemDto } from './dto/menu.dto.js';
 @Injectable()
@@ -10,9 +11,8 @@ export class MenuService {
   constructor(
     @InjectRepository(MenuItemEntity)
     private readonly items: Repository<MenuItemEntity>,
-    @InjectRepository(RestaurantEntity)
-    private readonly restaurants: Repository<RestaurantEntity>,
     private readonly restaurantService: RestaurantsService,
+    private readonly storage: CloudinaryFileStorageProvider,
   ) {}
   publicMenu(restaurantId: number) {
     return this.items.find({
@@ -33,16 +33,17 @@ export class MenuService {
   }
   async create(userId: number, dto: CreateMenuItemDto) {
     await this.restaurantService.owned(userId, dto.restaurantId);
-    return this.items.save(
+    const item = await this.items.save(
       this.items.create({
         ...dto,
         uuid: randomUUID(),
         slug: await this.slug(dto.restaurantId, dto.name),
-        isAvailable: true,
+        isAvailable: dto.isAvailable ?? true,
         isFeatured: false,
         displayOrder: dto.displayOrder ?? 0,
       }),
     );
+    return item;
   }
   async update(userId: number, id: number, dto: UpdateMenuItemDto) {
     const item = await this.ownedItem(userId, id);
@@ -54,6 +55,13 @@ export class MenuService {
   async remove(userId: number, id: number) {
     const item = await this.ownedItem(userId, id);
     await this.items.softRemove(item);
+  }
+  uploadImage(userId: number, buffer: Buffer) {
+    return this.storage.upload({
+      buffer,
+      folder: `plate40/menu/${userId}`,
+      publicId: randomUUID(),
+    });
   }
   private async ownedItem(userId: number, id: number) {
     const item = await this.items.findOneBy({ id });

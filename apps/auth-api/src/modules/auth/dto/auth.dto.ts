@@ -1,4 +1,4 @@
-import { UserRole } from '@app/contracts';
+import { DeliveryDocumentType, UserRole, VehicleType } from '@app/contracts';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEmail,
@@ -29,6 +29,19 @@ export class LoginDto {
   @ApiProperty() @IsEmail() email: string;
   @ApiProperty() @IsString() password: string;
   @ApiPropertyOptional() @IsString() @IsOptional() deviceName?: string;
+}
+export class DeliveryPartnerRegisterDto extends RegisterDto {
+  @ApiPropertyOptional() @IsString() @IsOptional() profilePhotoUrl?: string;
+  @ApiProperty() @IsString() @Length(5, 500) address: string;
+  @ApiProperty({ enum: VehicleType })
+  @IsEnum(VehicleType)
+  vehicleType: VehicleType;
+  @ApiProperty() @IsString() @Length(3, 30) vehicleNumber: string;
+  @ApiProperty({ enum: DeliveryDocumentType })
+  @IsEnum(DeliveryDocumentType)
+  documentType: DeliveryDocumentType;
+  @ApiProperty() @IsString() @Length(3, 100) documentNumber: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() documentUrl?: string;
 }
 export class RefreshTokenDto {
   @ApiProperty() @IsString() refreshToken: string;

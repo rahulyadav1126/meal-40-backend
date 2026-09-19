@@ -12,7 +12,10 @@ import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CurrentUser } from '@app/auth';
 import type { AuthenticatedUser } from '@app/contracts';
-import { NotificationEntity } from '@app/database';
+import { EmailTemplateEntity, NotificationEntity } from '@app/database';
+import { NodemailerEmailProvider } from '@app/integrations';
+import { EmailNotificationService } from './email-notification.service.js';
+import { EmailTemplateRenderer } from './email-template.renderer.js';
 @Injectable()
 class NotificationsService {
   constructor(
@@ -57,9 +60,16 @@ class NotificationsController {
   }
 }
 @Module({
-  imports: [TypeOrmModule.forFeature([NotificationEntity])],
+  imports: [
+    TypeOrmModule.forFeature([NotificationEntity, EmailTemplateEntity]),
+  ],
   controllers: [NotificationsController],
-  providers: [NotificationsService],
-  exports: [NotificationsService],
+  providers: [
+    NotificationsService,
+    EmailTemplateRenderer,
+    EmailNotificationService,
+    NodemailerEmailProvider,
+  ],
+  exports: [NotificationsService, EmailNotificationService],
 })
 export class NotificationsModule {}

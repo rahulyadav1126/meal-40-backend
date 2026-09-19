@@ -84,14 +84,4 @@ export class MerchantOrdersController {
   ) {
     return this.orders.merchantTransition(user.sub, id, OrderStatus.READY);
   }
-  @Patch(':id/out-for-delivery') out(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id', ParseIntPipe) id: number,
-  ) {
-    return this.orders.merchantTransition(
-      user.sub,
-      id,
-      OrderStatus.OUT_FOR_DELIVERY,
-    );
-  }
 }

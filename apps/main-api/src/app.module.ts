@@ -12,12 +12,15 @@ import { CartModule } from './modules/cart/cart.module.js';
 import { CategoriesModule } from './modules/categories/categories.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { MenuModule } from './modules/menu/menu.module.js';
+import { LocationsModule } from './modules/locations/locations.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
 import { RealtimeModule } from './modules/realtime/realtime.module.js';
 import { RestaurantsModule } from './modules/restaurants/restaurants.module.js';
 import { ReviewsModule } from './modules/reviews/reviews.module.js';
+import { DeliveryModule } from './modules/delivery/delivery.module.js';
+import { UsersModule } from './modules/users/users.module.js';
 @Module({
   imports: [
     Plate40ConfigModule.forRoot(['.env.main', '.env']),
@@ -32,12 +35,15 @@ import { ReviewsModule } from './modules/reviews/reviews.module.js';
     CategoriesModule,
     HealthModule,
     MenuModule,
+    LocationsModule,
     NotificationsModule,
     OrdersModule,
     PaymentsModule,
     RealtimeModule,
     RestaurantsModule,
     ReviewsModule,
+    DeliveryModule,
+    UsersModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

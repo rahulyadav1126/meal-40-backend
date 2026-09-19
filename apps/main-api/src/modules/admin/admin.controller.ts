@@ -20,6 +20,7 @@ import {
   type AuthenticatedUser,
   OrderStatus,
   RestaurantApprovalStatus,
+  RestaurantOpeningStatus,
   UserRole,
   UserStatus,
 } from '@app/contracts';
@@ -68,6 +69,10 @@ class AdminService {
     const old = entity.approvalStatus;
     entity.approvalStatus = status;
     entity.isActive = status === RestaurantApprovalStatus.APPROVED;
+    entity.openingStatus =
+      status === RestaurantApprovalStatus.APPROVED
+        ? RestaurantOpeningStatus.OPEN
+        : RestaurantOpeningStatus.CLOSED;
     await this.restaurants.save(entity);
     await this.audit(
       actor,

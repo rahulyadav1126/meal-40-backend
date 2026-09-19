@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -8,16 +9,38 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { hash, verify } from 'argon2';
 import { randomUUID } from 'node:crypto';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import {
   ErrorCode,
+  DeliveryPartnerApprovalStatus,
+  VerificationStatus,
   TOKEN_TYPE,
   type JwtPayload,
   UserRole,
   UserStatus,
 } from '@app/contracts';
-import { AuthSessionEntity, UserEntity } from '@app/database';
-import type { AuthResponseDto, LoginDto, RegisterDto } from './dto/auth.dto.js';
+import {
+  AuthSessionEntity,
+  DeliveryPartnerDocumentEntity,
+  DeliveryPartnerEntity,
+  EmailTemplateEntity,
+  UserEntity,
+} from '@app/database';
+import { NodemailerEmailProvider } from '@app/integrations';
+import type {
+  AuthResponseDto,
+  DeliveryPartnerRegisterDto,
+  LoginDto,
+  RegisterDto,
+} from './dto/auth.dto.js';
+
+/** Render {{variable}} placeholders in an email template string */
+function renderTemplate(source: string, vars: Record<string, string>): string {
+  return source.replace(
+    /{{\s*([A-Za-z][A-Za-z0-9_.]*)\s*}}/g,
+    (_match, key: string) => vars[key] ?? '',
+  );
+}
 
 interface RequestMetadata {
   ipAddress?: string;
@@ -29,14 +52,69 @@ interface RefreshPayload extends JwtPayload {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
+    private readonly dataSource: DataSource,
     @InjectRepository(UserEntity)
     private readonly users: Repository<UserEntity>,
     @InjectRepository(AuthSessionEntity)
     private readonly sessions: Repository<AuthSessionEntity>,
+    @InjectRepository(EmailTemplateEntity)
+    private readonly emailTemplates: Repository<EmailTemplateEntity>,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly mailer: NodemailerEmailProvider,
   ) {}
+
+  async registerDeliveryPartner(
+    dto: DeliveryPartnerRegisterDto,
+    metadata: RequestMetadata,
+  ): Promise<AuthResponseDto> {
+    if (await this.users.exists({ where: { email: dto.email.toLowerCase() } }))
+      throw new ConflictException(ErrorCode.EMAIL_ALREADY_EXISTS);
+    if (await this.users.exists({ where: { phone: dto.phone } }))
+      throw new ConflictException(ErrorCode.PHONE_ALREADY_EXISTS);
+    const passwordHash = await hash(dto.password);
+    const user = await this.dataSource.transaction(async (manager) => {
+      const createdUser = await manager.save(
+        UserEntity,
+        manager.create(UserEntity, {
+          uuid: randomUUID(),
+          name: dto.name.trim(),
+          email: dto.email.toLowerCase(),
+          phone: dto.phone,
+          passwordHash,
+          role: UserRole.DELIVERY_PARTNER,
+          status: UserStatus.ACTIVE,
+        }),
+      );
+      const partner = await manager.save(
+        DeliveryPartnerEntity,
+        manager.create(DeliveryPartnerEntity, {
+          userId: createdUser.id,
+          profilePhotoUrl: dto.profilePhotoUrl ?? null,
+          address: dto.address.trim(),
+          vehicleType: dto.vehicleType,
+          vehicleNumber: dto.vehicleNumber.trim().toUpperCase(),
+          approvalStatus: DeliveryPartnerApprovalStatus.PENDING,
+          isOnline: false,
+        }),
+      );
+      await manager.save(
+        DeliveryPartnerDocumentEntity,
+        manager.create(DeliveryPartnerDocumentEntity, {
+          deliveryPartnerId: partner.id,
+          type: dto.documentType,
+          documentNumber: dto.documentNumber.trim(),
+          documentUrl: dto.documentUrl ?? null,
+          status: VerificationStatus.PENDING,
+        }),
+      );
+      return createdUser;
+    });
+    return this.createSession(user, 'Plate40 Delivery Web', metadata);
+  }
 
   async register(
     dto: RegisterDto,
@@ -59,7 +137,65 @@ export class AuthService {
         status: UserStatus.ACTIVE,
       }),
     );
+
+    // Send welcome email — fire-and-forget so SMTP errors never break registration
+    this.sendWelcomeEmail(user).catch((err: unknown) =>
+      this.logger.warn(
+        `Welcome email failed for ${user.email}: ${String(err)}`,
+      ),
+    );
+
     return this.createSession(user, undefined, metadata);
+  }
+
+  private async sendWelcomeEmail(user: UserEntity): Promise<void> {
+    if (!user.email) return;
+
+    const frontendUrl =
+      this.config.get<string>('app.frontendCustomerUrl') ??
+      'http://localhost:3000';
+    const dashboardUrl =
+      user.role === UserRole.MERCHANT || user.role === UserRole.DELIVERY_PARTNER
+        ? (this.config.get<string>('app.frontendDashboardUrl') ??
+          'http://localhost:3001')
+        : frontendUrl;
+    const loginLink = `${dashboardUrl}/login`;
+    const appName = 'Plate40';
+    const currentYear = String(new Date().getFullYear());
+
+    // ── Load template from DB (seeded WELCOME template) ───────────────────────
+    const template = await this.emailTemplates.findOne({
+      where: { templateKey: 'WELCOME', locale: 'en', isActive: true },
+    });
+
+    const vars: Record<string, string> = {
+      name: user.name,
+      loginLink,
+      appName,
+      currentYear,
+    };
+
+    let subject: string;
+    let html: string;
+    let text: string;
+
+    if (template) {
+      // Use the DB template — renders {{name}}, {{loginLink}}, {{appName}}, {{currentYear}}
+      subject = renderTemplate(template.subjectTemplate, vars);
+      html = renderTemplate(template.htmlBody, vars);
+      text = renderTemplate(template.textBody, vars);
+      this.logger.log(`Sending WELCOME email via DB template to ${user.email}`);
+    } else {
+      // Fallback: plain inline email if template not found in DB
+      this.logger.warn(
+        'WELCOME email template not found in DB — using inline fallback',
+      );
+      subject = `Welcome to ${appName}, ${user.name}!`;
+      text = `Hi ${user.name},\n\nWelcome to ${appName}! Sign in here: ${loginLink}\n\n— The ${appName} Team`;
+      html = `<h1>Welcome, ${user.name}!</h1><p>Your account is ready. <a href="${loginLink}">Sign in</a></p>`;
+    }
+
+    await this.mailer.send({ to: user.email, subject, html, text });
   }
 
   async login(

@@ -1,4 +1,5 @@
 import { OrderStatus, PaymentMethod } from '@app/contracts';
+import { Type } from 'class-transformer';
 import {
   IsEnum,
   IsInt,
@@ -8,9 +9,9 @@ import {
   Min,
 } from 'class-validator';
 export class CreateOrderDto {
-  @IsInt() @Min(1) cartId: number;
-  @IsInt() @Min(1) addressId: number;
-  @IsInt() @Min(1) @IsOptional() couponId?: number;
+  @Type(() => Number) @IsInt() @Min(1) cartId: number;
+  @Type(() => Number) @IsInt() @Min(1) addressId: number;
+  @Type(() => Number) @IsInt() @Min(1) @IsOptional() couponId?: number;
   @IsEnum(PaymentMethod) paymentMethod: PaymentMethod;
   @IsString() @MaxLength(500) @IsOptional() customerNote?: string;
 }
