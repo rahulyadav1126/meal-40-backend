@@ -29,4 +29,4 @@ import { REQUEST_ID_HEADER } from '@app/contracts';
   ],
   exports: [LoggerModule],
 })
-export class Plate40LoggerModule {}
+export class Plate40LoggerModule { }

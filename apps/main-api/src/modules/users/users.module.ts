@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 import {
   Body,
   ConflictException,
@@ -75,6 +76,13 @@ class UsersController {
     return this.users.update(user.sub, dto);
   }
 }
+=======
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { UserEntity } from '@app/database';
+import { UsersController } from './users.controller.js';
+import { UsersService } from './users.service.js';
+>>>>>>> Stashed changes
 
 @Module({
   imports: [TypeOrmModule.forFeature([UserEntity])],

@@ -19,7 +19,10 @@ import { PaymentsModule } from './modules/payments/payments.module.js';
 import { RealtimeModule } from './modules/realtime/realtime.module.js';
 import { RestaurantsModule } from './modules/restaurants/restaurants.module.js';
 import { ReviewsModule } from './modules/reviews/reviews.module.js';
+<<<<<<< Updated upstream
 import { DeliveryModule } from './modules/delivery/delivery.module.js';
+=======
+>>>>>>> Stashed changes
 import { UsersModule } from './modules/users/users.module.js';
 @Module({
   imports: [
@@ -42,7 +45,10 @@ import { UsersModule } from './modules/users/users.module.js';
     RealtimeModule,
     RestaurantsModule,
     ReviewsModule,
+<<<<<<< Updated upstream
     DeliveryModule,
+=======
+>>>>>>> Stashed changes
     UsersModule,
   ],
   providers: [
