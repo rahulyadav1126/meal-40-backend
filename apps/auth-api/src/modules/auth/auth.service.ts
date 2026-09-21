@@ -113,7 +113,15 @@ export class AuthService {
       );
       return createdUser;
     });
-    return this.createSession(user, 'Plate40 Delivery Web', metadata);
+
+    // Send welcome email — fire-and-forget
+    this.sendWelcomeEmail(user).catch((err: unknown) =>
+      this.logger.warn(
+        `Welcome email failed for ${user.email}: ${String(err)}`,
+      ),
+    );
+
+    return this.createSession(user, dto.deviceName, metadata);
   }
 
   async register(

@@ -88,6 +88,12 @@ export class DeliveryController {
   ) {
     return this.delivery.complete(user.sub, id, dto.otp);
   }
+  @Post(':id/cancel') cancel(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.delivery.cancel(user.sub, id);
+  }
 }
 
 @ApiBearerAuth()

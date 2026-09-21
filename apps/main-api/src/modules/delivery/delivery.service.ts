@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -11,6 +12,7 @@ import {
   DeliveryPartnerApprovalStatus,
   DeliveryStatus,
   ErrorCode,
+  NotificationType,
   ORDER_TRANSITIONS,
   OrderStatus,
   SOCKET_EVENT,
@@ -22,6 +24,7 @@ import {
   DeliveryEntity,
   DeliveryPartnerDocumentEntity,
   DeliveryPartnerEntity,
+  NotificationEntity,
   OrderEntity,
   OrderItemEntity,
   OrderStatusHistoryEntity,
@@ -29,6 +32,7 @@ import {
 } from '@app/database';
 import { RealtimeGateway } from '../realtime/realtime.gateway.js';
 import { OrderStateService } from '../orders/services/order-state.service.js';
+import { EmailNotificationService } from '../notifications/email-notification.service.js';
 
 const ACTIVE_DELIVERY_STATUSES = [
   DeliveryStatus.ASSIGNED,
@@ -40,6 +44,8 @@ const ACTIVE_DELIVERY_STATUSES = [
 
 @Injectable()
 export class DeliveryService {
+  private readonly logger = new Logger(DeliveryService.name);
+
   constructor(
     private readonly dataSource: DataSource,
     @InjectRepository(DeliveryPartnerEntity)
@@ -54,8 +60,11 @@ export class DeliveryService {
     private readonly users: Repository<UserEntity>,
     @InjectRepository(OrderItemEntity)
     private readonly orderItems: Repository<OrderItemEntity>,
+    @InjectRepository(NotificationEntity)
+    private readonly notifications: Repository<NotificationEntity>,
     private readonly orderStates: OrderStateService,
     private readonly realtime: RealtimeGateway,
+    private readonly emailNotifications: EmailNotificationService,
   ) {}
 
   async profile(userId: number) {
@@ -244,14 +253,101 @@ export class DeliveryService {
     );
   }
 
-  arriveCustomer(userId: number, id: number) {
-    return this.deliveryStep(
+  async arriveCustomer(userId: number, id: number) {
+    const result = await this.deliveryStep(
       userId,
       id,
       DeliveryStatus.OUT_FOR_DELIVERY,
       DeliveryStatus.ARRIVED_AT_CUSTOMER,
       'arrivedCustomerAt',
     );
+    // Fire-and-forget: send OTP to customer via email & SMS
+    this.sendDeliveryOtpNotifications(result.delivery as DeliveryEntity).catch(
+      (err: unknown) =>
+        this.logger.warn(`Delivery OTP notification failed: ${String(err)}`),
+    );
+    return result;
+  }
+
+  /**
+   * Look up the plain-text OTP stored in the in-app notification and
+   * re-deliver it to the customer via email (and SMS when available).
+   */
+  private async sendDeliveryOtpNotifications(
+    delivery: DeliveryEntity,
+  ): Promise<void> {
+    // Fetch the order to know the customer
+    const order = await this.dataSource
+      .getRepository(OrderEntity)
+      .findOne({
+        where: { id: delivery.orderId },
+        relations: { customer: true },
+      });
+    if (!order?.customer) return;
+
+    const customer = order.customer;
+
+    // The OTP plain-text is saved in NotificationEntity.data.otp
+    const otpNotification = await this.notifications.findOne({
+      where: {
+        userId: order.customerId,
+        type: NotificationType.DELIVERY_OTP,
+      },
+      order: { createdAt: 'DESC' },
+    });
+    
+    this.logger.log(`Found OTP Notification: ${JSON.stringify(otpNotification)}`);
+    
+    // Safely parse data in case TypeORM returns it as a string
+    const data = typeof otpNotification?.data === 'string' 
+      ? JSON.parse(otpNotification.data) 
+      : otpNotification?.data;
+      
+    const otp = data?.['otp'] as string | undefined;
+    if (!otp) {
+      this.logger.warn(
+        `No OTP notification found for order ${order.id} — skipping email/SMS`,
+      );
+      return;
+    }
+
+    const orderNumber = order.orderNumber;
+
+    // ── Email ──────────────────────────────────────────────────────────────────
+    if (customer.email) {
+      this.logger.log(`Sending delivery OTP to ${customer.email} for order ${orderNumber}...`);
+      await this.emailNotifications
+        .send({
+          to: customer.email,
+          templateKey: 'DELIVERY_OTP',
+          variables: {
+            name: customer.name,
+            otp,
+            orderNumber,
+          },
+        })
+        .then(() => this.logger.log(`Email successfully sent to ${customer.email}`))
+        .catch((err: unknown) =>
+          this.logger.error(
+            `Delivery OTP email failed for ${customer.email}: ${String(err)}`,
+          ),
+        );
+    } else {
+      this.logger.warn(`Customer ${customer.id} has no email address`);
+    }
+
+    // ── SMS ────────────────────────────────────────────────────────────────────
+    // Log the SMS for now; wire a real SmsProvider (e.g. Twilio) here when ready.
+    if (customer.phone) {
+      this.logger.log(
+        `[SMS] To: ${customer.phone} | Your delivery OTP for order ${orderNumber} is ${otp}. Share it only after receiving your order.`,
+      );
+      // TODO: replace the log above with an actual SmsProvider.send() call:
+      // await this.smsProvider.send({
+      //   to: customer.phone,
+      //   message: `Your delivery OTP for order ${orderNumber} is ${otp}. Share it only after receiving your order.`,
+      // });
+    }
   }
 
   async complete(userId: number, id: number, otp: string) {
@@ -300,6 +396,34 @@ export class DeliveryService {
         totalAmount: (base + distance).toFixed(2),
       }),
     );
+    return this.emit(delivery, order);
+  }
+
+  async cancel(userId: number, id: number) {
+    const partner = await this.partner(userId);
+    const delivery = await this.deliveries.findOneBy({
+      id,
+      deliveryPartnerId: partner.id,
+    });
+    if (!delivery) throw new NotFoundException('Delivery not found');
+    if (
+      delivery.status === DeliveryStatus.DELIVERED ||
+      delivery.status === DeliveryStatus.CANCELLED
+    )
+      throw new BadRequestException(
+        `Cannot cancel a ${delivery.status} delivery`,
+      );
+
+    const order = await this.orderForDelivery(delivery);
+    await this.orderStates.transition(
+      order,
+      OrderStatus.CANCELLED,
+      userId,
+      'Cancelled by delivery partner',
+    );
+
+    delivery.status = DeliveryStatus.CANCELLED;
+    await this.deliveries.save(delivery);
     return this.emit(delivery, order);
   }
 

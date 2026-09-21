@@ -10,15 +10,18 @@ import { Repository } from 'typeorm';
 import type { Server, Socket } from 'socket.io';
 import { SOCKET_ROOM, type JwtPayload, UserRole } from '@app/contracts';
 import { RestaurantEntity } from '@app/database';
-@WebSocketGateway({ cors: false })
+
+@WebSocketGateway()
 export class RealtimeGateway implements OnGatewayConnection {
   @WebSocketServer() server: Server;
+
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     @InjectRepository(RestaurantEntity)
     private readonly restaurants: Repository<RestaurantEntity>,
   ) {}
+
   async handleConnection(client: Socket) {
     try {
       const token = this.token(client);
@@ -43,17 +46,21 @@ export class RealtimeGateway implements OnGatewayConnection {
       client.disconnect(true);
     }
   }
+
   emitToRestaurant(restaurantId: number, event: string, data: unknown) {
     this.server
       .to(`${SOCKET_ROOM.RESTAURANT}:${restaurantId}`)
       .emit(event, data);
   }
+
   emitToUser(userId: number, event: string, data: unknown) {
     this.server.to(`${SOCKET_ROOM.USER}:${userId}`).emit(event, data);
   }
+
   emitToAdmin(event: string, data: unknown) {
     this.server.to(SOCKET_ROOM.ADMIN).emit(event, data);
   }
+
   private token(client: Socket): string {
     const value: unknown = client.handshake.auth.token;
     if (typeof value !== 'string') throw new Error('Missing token');

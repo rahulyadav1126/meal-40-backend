@@ -5,11 +5,13 @@ import {
   DeliveryEntity,
   DeliveryPartnerDocumentEntity,
   DeliveryPartnerEntity,
+  NotificationEntity,
   OrderEntity,
   OrderItemEntity,
   OrderStatusHistoryEntity,
   UserEntity,
 } from '@app/database';
+import { NotificationsModule } from '../notifications/notifications.module.js';
 import { OrdersModule } from '../orders/orders.module.js';
 import { RealtimeModule } from '../realtime/realtime.module.js';
 import {
@@ -25,11 +27,13 @@ import { DeliveryService } from './delivery.service.js';
       DeliveryPartnerDocumentEntity,
       DeliveryEntity,
       DeliveryEarningEntity,
+      NotificationEntity,
       OrderEntity,
       OrderItemEntity,
       OrderStatusHistoryEntity,
       UserEntity,
     ]),
+    NotificationsModule,
     OrdersModule,
     RealtimeModule,
   ],
