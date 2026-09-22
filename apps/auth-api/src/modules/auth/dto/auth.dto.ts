@@ -24,6 +24,7 @@ export class RegisterDto {
   @IsEnum(UserRole)
   @IsOptional()
   role: UserRole = UserRole.CUSTOMER;
+  @ApiPropertyOptional() @IsString() @IsOptional() deviceName?: string;
 }
 export class LoginDto {
   @ApiProperty() @IsEmail() email: string;

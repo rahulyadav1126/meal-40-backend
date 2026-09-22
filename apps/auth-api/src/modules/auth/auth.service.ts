@@ -153,7 +153,7 @@ export class AuthService {
       ),
     );
 
-    return this.createSession(user, undefined, metadata);
+    return this.createSession(user, dto.deviceName, metadata);
   }
 
   private async sendWelcomeEmail(user: UserEntity): Promise<void> {
