@@ -12,6 +12,7 @@ import { UserEntity } from '../users/user.entity.js';
 @Index('idx_restaurants_merchant', ['merchantId'])
 @Index('idx_restaurants_approval_active', ['approvalStatus', 'isActive'])
 export class RestaurantEntity extends SoftDeleteEntity {
+  @Column({ type: 'json', nullable: true }) cuisines: import('../../../../contracts/src/enums.js').Cuisine[] | null;
   @Column({ name: 'availability_settings', type: 'json', nullable: true })
   availabilitySettings: import('../../../../common/src/utils/availability.util.js').AvailabilitySettings | null;
   @Column({ name: 'availability_version', type: 'int', unsigned: true, default: 0 })

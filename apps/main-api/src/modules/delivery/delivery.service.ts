@@ -144,7 +144,7 @@ export class DeliveryService {
   async history(userId: number) {
     const partner = await this.partner(userId);
     return this.deliveries.find({
-      where: { deliveryPartnerId: partner.id },
+      where: { deliveryPartnerId: partner.id, status: In([DeliveryStatus.DELIVERED, DeliveryStatus.CANCELLED]) },
       relations: { order: { restaurant: true, address: true } },
       order: { createdAt: 'DESC' },
     });
@@ -210,7 +210,7 @@ export class DeliveryService {
         locked.deliveryPartnerId
       )
         throw new BadRequestException(ErrorCode.DELIVERY_ALREADY_ASSIGNED);
-      if (locked.rejectedPartnerIds?.includes(partner.id))
+      if (locked.rejectedPartnerIds?.some(id => Number(id) === Number(partner.id)))
         throw new ForbiddenException('You rejected this delivery');
       const order = await manager.findOneOrFail(OrderEntity, {
         where: { id: locked.orderId }, lock: { mode: 'pessimistic_write' },

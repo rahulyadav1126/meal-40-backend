@@ -3,7 +3,7 @@ import { DataSource } from 'typeorm';
 import { Transform } from 'class-transformer';
 import { IsBoolean, IsEnum, IsNumber, IsOptional, IsString, MaxLength, Max, Min } from 'class-validator';
 import { Public } from '@app/auth';
-import { FoodType } from '@app/contracts';
+import { FoodType, RestaurantApprovalStatus } from '@app/contracts';
 import { PaginationDto, haversineDistanceKm, menuAvailability, restaurantAvailability, menuPrice } from '@app/common';
 import { MenuItemEntity, RestaurantEntity } from '@app/database';
 
@@ -24,18 +24,19 @@ export class SearchController {
   async search(@Query() query: SearchDto) {
     if ((query.latitude === undefined) !== (query.longitude === undefined)) throw new BadRequestException('Both latitude and longitude are required');
     const term = (query.q ?? query.search ?? '').trim().toLowerCase();
-    const words = term.match(/[\p{L}\p{N}]+/gu) ?? [];
-    const fulltext = words.map(word => `${word}*`).join(' ');
     const prefix = `${term.replace(/[\\%_]/g, '\\$&')}%`;
+    const contains = `%${term.replace(/[\\%_]/g, '\\$&')}%`;
     const qb = this.db.getRepository(RestaurantEntity).createQueryBuilder('r')
-      .where('r.approvalStatus = :approved AND r.isActive = true', { approved: 'APPROVED' });
-    if (term) qb.andWhere(`(r.name LIKE :prefix OR MATCH(r.name, r.description) AGAINST (:fulltext IN BOOLEAN MODE)
-      OR r.city LIKE :prefix OR EXISTS (SELECT 1 FROM menu_items m LEFT JOIN categories c ON c.id = m.category_id
-      WHERE m.restaurant_id = r.id AND m.deleted_at IS NULL AND (m.name LIKE :prefix OR MATCH(m.name, m.description) AGAINST (:fulltext IN BOOLEAN MODE) OR c.name LIKE :prefix)))`, { prefix, fulltext });
+      .where('r.approvalStatus = :approved AND r.isActive = true', { approved: RestaurantApprovalStatus.APPROVED });
+    // Works on a fresh entity-generated schema without custom FULLTEXT indexes.
+    if (term) qb.andWhere(`(LOWER(r.name) LIKE :contains OR LOWER(r.description) LIKE :contains
+      OR LOWER(CAST(r.cuisines AS CHAR)) LIKE :contains OR LOWER(r.city) LIKE :contains
+      OR EXISTS (SELECT 1 FROM menu_items m LEFT JOIN categories c ON c.id = m.category_id
+      WHERE m.restaurant_id = r.id AND m.deleted_at IS NULL AND (LOWER(m.name) LIKE :contains OR LOWER(m.description) LIKE :contains OR LOWER(c.name) LIKE :contains OR LOWER(CAST(m.cuisines AS CHAR)) LIKE :contains)))`, { contains });
     if (query.foodType) qb.andWhere('EXISTS (SELECT 1 FROM menu_items m WHERE m.restaurant_id = r.id AND m.deleted_at IS NULL AND m.food_type = :foodType)', { foodType: query.foodType });
     if (query.minimumRating !== undefined) qb.andWhere('r.averageRating >= :rating', { rating: query.minimumRating });
     if (query.latitude !== undefined) qb.andWhere('ST_Distance_Sphere(POINT(r.longitude, r.latitude), POINT(:longitude, :latitude)) <= r.deliveryRadiusKm * 1000', { latitude: query.latitude, longitude: query.longitude });
-    if (term) qb.addSelect('CASE WHEN LOWER(r.name) = :term THEN 100 WHEN r.name LIKE :prefix THEN 80 ELSE 0 END', 'name_rank').setParameter('term', term).orderBy('name_rank', 'DESC');
+    if (term) qb.addSelect('CASE WHEN LOWER(r.name) = :term THEN 100 WHEN LOWER(r.name) LIKE :prefix THEN 80 ELSE 0 END', 'name_rank').setParameters({ term, prefix }).orderBy('name_rank', 'DESC');
     else qb.orderBy('r.averageRating', 'DESC');
     qb.addOrderBy('r.id', 'ASC');
     // Bound work per request. The response explicitly tells clients when to narrow the search.
@@ -46,7 +47,7 @@ export class SearchController {
     if (restaurants.length && term) {
       const menu = this.db.getRepository(MenuItemEntity).createQueryBuilder('m').leftJoinAndSelect('m.category', 'category')
         .where('m.restaurantId IN (:...ids)', { ids: restaurants.map(r => r.id) })
-        .andWhere('(m.name LIKE :prefix OR MATCH(m.name, m.description) AGAINST (:fulltext IN BOOLEAN MODE) OR category.name LIKE :prefix)', { prefix, fulltext });
+        .andWhere('(LOWER(m.name) LIKE :contains OR LOWER(m.description) LIKE :contains OR LOWER(category.name) LIKE :contains OR LOWER(CAST(m.cuisines AS CHAR)) LIKE :contains)', { contains });
       if (query.foodType) menu.andWhere('m.foodType = :foodType', { foodType: query.foodType });
       dishes = await menu.orderBy('m.name', 'ASC').take(5000).getMany();
     }

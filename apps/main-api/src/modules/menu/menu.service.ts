@@ -1,8 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
-import { Repository } from 'typeorm';
-import { MenuItemEntity, RestaurantEntity } from '@app/database';
+import { Repository, type EntityManager } from 'typeorm';
+import { CategoryEntity, MenuItemEntity, RestaurantEntity } from '@app/database';
 import { CloudinaryFileStorageProvider } from '@app/integrations';
 import { RestaurantsService } from '../restaurants/restaurants.service.js';
 import { menuAvailability, menuPrice, Money } from '@app/common';
@@ -38,21 +38,26 @@ export class MenuService {
   async create(userId: number, dto: CreateMenuItemDto) {
     this.validatePricing(dto);
     if (dto.serviceHours) validateIntervals(dto.serviceHours, true);
-    await this.restaurantService.owned(userId, dto.restaurantId);
-    const item = await this.items.save(
-      this.items.create({
+    return this.items.manager.transaction(async manager => {
+    const restaurant = await manager.findOne(RestaurantEntity, { where: { id: dto.restaurantId, merchantId: userId }, lock: { mode: 'pessimistic_write' } });
+    if (!restaurant) throw new NotFoundException('Restaurant not found');
+    const categoryId = await this.category(manager, dto.categoryId);
+    const item = await manager.save(
+      manager.create(MenuItemEntity, {
         ...dto,
+        categoryId,
         discountStartsAt: dto.discountStartsAt ? new Date(dto.discountStartsAt) : null,
         discountEndsAt: dto.discountEndsAt ? new Date(dto.discountEndsAt) : null,
         soldOutUntil: dto.soldOutUntil ? new Date(dto.soldOutUntil) : null,
         uuid: randomUUID(),
-        slug: await this.slug(dto.restaurantId, dto.name),
+        slug: await this.slug(dto.restaurantId, dto.name, manager),
         isAvailable: dto.isAvailable ?? true,
         isFeatured: false,
         displayOrder: dto.displayOrder ?? 0,
       }),
     );
     return item;
+    });
   }
   async update(userId: number, id: number, dto: UpdateMenuItemDto) {
     if (dto.serviceHours) validateIntervals(dto.serviceHours, true);
@@ -65,6 +70,8 @@ export class MenuService {
       const item = await manager.findOne(MenuItemEntity, { where: { id, restaurantId: restaurant.id }, lock: { mode: 'pessimistic_write' } });
       if (!item) throw new NotFoundException('Menu item not found');
       Object.assign(item, dto);
+      item.restaurantId = restaurant.id;
+      if (dto.categoryId !== undefined) item.categoryId = await this.category(manager, dto.categoryId);
       if (dto.discountStartsAt !== undefined) item.discountStartsAt = dto.discountStartsAt ? new Date(dto.discountStartsAt) : null;
       if (dto.discountEndsAt !== undefined) item.discountEndsAt = dto.discountEndsAt ? new Date(dto.discountEndsAt) : null;
       this.validatePricing(item);
@@ -99,16 +106,28 @@ export class MenuService {
     if (item.discountedPrice != null && (!validMoney(item.discountedPrice) || !Money.fromDecimal(item.discountedPrice).isLessThan(Money.fromDecimal(item.price)))) throw new BadRequestException('Discounted price must be non-negative and below the base price');
     if (item.discountStartsAt && item.discountEndsAt && new Date(item.discountStartsAt) >= new Date(item.discountEndsAt)) throw new BadRequestException('Discount end must be after its start');
   }
-  private async slug(restaurantId: number, name: string) {
+  private async category(manager: EntityManager, id?: number | null): Promise<number> {
+    if (id != null) {
+      const category = await manager.findOneBy(CategoryEntity, { id, isActive: true });
+      if (!category) throw new BadRequestException('Choose an active menu category');
+      return category.id;
+    }
+    // Only explicit menu creation provisions the fallback, never public reads.
+    await manager.createQueryBuilder().insert().into(CategoryEntity).values({ name: 'General', slug: 'general', isActive: true, displayOrder: 0 }).orIgnore().execute();
+    const category = await manager.findOneBy(CategoryEntity, { slug: 'general', isActive: true });
+    if (!category) throw new BadRequestException('The General category is disabled. Choose another active category.');
+    return category.id;
+  }
+  private async slug(restaurantId: number, name: string, manager: EntityManager) {
     const base = name
       .toLowerCase()
       .trim()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
-    let slug = base;
+    let slug = base || 'dish';
     let suffix = 1;
-    while (await this.items.exists({ where: { restaurantId, slug } }))
-      slug = `${base}-${suffix++}`;
+    while (await manager.getRepository(MenuItemEntity).exists({ where: { restaurantId, slug }, withDeleted: true }))
+      slug = `${base || 'dish'}-${suffix++}`;
     return slug;
   }
 }

@@ -1,5 +1,6 @@
 import {
   FoodType,
+  Cuisine,
   RestaurantOpeningStatus,
   RestaurantSortField,
 } from '@app/contracts';
@@ -7,6 +8,8 @@ import { ApiProperty, PartialType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   IsEmail,
+  IsArray,
+  ArrayMaxSize,
   IsEnum,
   IsLatitude,
   IsLongitude,
@@ -22,6 +25,7 @@ import {
 import { PaginationDto } from '@app/common';
 
 export class CreateRestaurantDto {
+  @IsOptional() @IsArray() @ArrayMaxSize(12) @IsEnum(Cuisine, { each: true }) cuisines?: Cuisine[] | null;
   @ApiProperty() @IsString() @Length(2, 160) name: string;
   @IsString() @MaxLength(2000) @IsOptional() description?: string;
   @IsPhoneNumber('IN') phone: string;

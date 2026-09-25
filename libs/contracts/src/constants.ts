@@ -23,6 +23,8 @@ export const ROLES_KEY = 'plate40:roles' as const;
 export const TOKEN_TYPE = { ACCESS: 'access', REFRESH: 'refresh' } as const;
 export const SWAGGER_PATH = 'docs' as const;
 export const DATABASE_TABLE = {
+  RESTAURANT_AVAILABILITY_AUDIT: 'restaurant_availability_audit',
+  MERCHANT_OFFER_AUDIT: 'merchant_offer_audit',
   USERS: 'users',
   AUTH_SESSIONS: 'auth_sessions',
   OTP_CODES: 'otp_codes',

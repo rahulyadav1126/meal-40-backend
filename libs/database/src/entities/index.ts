@@ -1,4 +1,5 @@
 import { AddressEntity } from './addresses/address.entity.js';
+import { MerchantOfferAuditEntity, RestaurantAvailabilityAuditEntity } from './audit-logs/merchant-settings-audit.entity.js';
 import { AuditLogEntity } from './audit-logs/audit-log.entity.js';
 import { AuthSessionEntity } from './auth-sessions/auth-session.entity.js';
 import { BackgroundJobEntity } from './background-jobs/background-job.entity.js';
@@ -27,6 +28,7 @@ import { UserEntity } from './users/user.entity.js';
 import { WebhookEventEntity } from './webhook-events/webhook-event.entity.js';
 
 export * from './addresses/address.entity.js';
+export * from './audit-logs/merchant-settings-audit.entity.js';
 export * from './audit-logs/audit-log.entity.js';
 export * from './auth-sessions/auth-session.entity.js';
 export * from './background-jobs/background-job.entity.js';
@@ -56,6 +58,8 @@ export * from './users/user.entity.js';
 export * from './webhook-events/webhook-event.entity.js';
 
 export const ENTITIES = [
+  MerchantOfferAuditEntity,
+  RestaurantAvailabilityAuditEntity,
   UserEntity,
   AuthSessionEntity,
   OtpCodeEntity,
