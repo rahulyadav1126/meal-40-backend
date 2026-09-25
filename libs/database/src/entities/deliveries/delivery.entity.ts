@@ -61,8 +61,11 @@ export class DeliveryEntity extends BaseEntity {
     nullable: true,
   })
   deliveryPartnerId: number | null;
+  // MySQL forbids SET NULL/CASCADE on a base column used by a STORED
+  // generated column (active_partner_id). Preserve rider history instead.
   @ManyToOne(() => DeliveryPartnerEntity, {
-    onDelete: 'SET NULL',
+    onDelete: 'RESTRICT',
+    onUpdate: 'RESTRICT',
     nullable: true,
   })
   @JoinColumn({ name: 'delivery_partner_id' })

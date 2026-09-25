@@ -4,7 +4,7 @@
 
 The reported migration failed while creating `deliveries`, with `AS (...) STORED UNSIGNED NULL`. TypeORM 0.3.27's MySQL query builder appends the unsigned modifier after the generated expression instead of as part of the numeric type.
 
-The delivery entity now uses `DECIMAL(20,0)` for `active_partner_id`, without `unsigned`. This exact integer-valued helper can represent every unsigned BIGINT partner ID. The real `delivery_partner_id` foreign key is unchanged. The generated expression and unique index still enforce at most one active delivery per rider, while inactive deliveries return NULL.
+The delivery entity now uses `DECIMAL(20,0)` for `active_partner_id`, without `unsigned`. This exact integer-valued helper can represent every unsigned BIGINT partner ID. The real `delivery_partner_id` remains nullable unsigned BIGINT. The generated expression and unique index still enforce at most one active delivery per rider, while inactive deliveries return NULL.
 
 Expected newly generated SQL has this shape:
 
@@ -17,16 +17,31 @@ Expected newly generated SQL has this shape:
 ) STORED NULL
 ```
 
-The forward migration `1790600000000-generated-partner-column.ts` aligns databases using the existing migration chain. Historical migration files are not rewritten. Do not remove the unique index or turn this into an ordinary writable column to bypass the syntax error.
+Do not remove the unique index or turn this into an ordinary writable column to bypass the syntax error. The workspace's migration files have since been removed by the user for a fresh baseline; the previously documented forward migration is no longer present.
+
+## Follow-up foreign-key error (1215)
+
+The next supplied log successfully builds both APIs and creates the tables, but fails when adding the delivery-partner foreign key with `ON DELETE SET NULL`. MySQL prohibits SET NULL and CASCADE actions on a base column used by a stored generated column. Here, `active_partner_id` depends on `delivery_partner_id`.
+
+The entity now explicitly uses `onDelete: 'RESTRICT'` and `onUpdate: 'RESTRICT'` for this relationship. The replacement migration must contain:
+
+```sql
+FOREIGN KEY (`delivery_partner_id`) REFERENCES `delivery_partners` (`id`)
+ON DELETE RESTRICT ON UPDATE RESTRICT
+```
+
+Unassigned deliveries may still have a NULL partner. Referenced riders cannot be hard-deleted or have their primary key changed; disable the account rather than removing delivery history. Direct application assignment/unassignment remains possible subject to normal business rules. The order foreign key and other unrelated relationships are unchanged.
+
+Reference: [MySQL generated-column foreign-key restrictions](https://dev.mysql.com/doc/refman/8.0/en/create-table-foreign-keys.html).
 
 ## Your separate fresh-database checkout
 
-The supplied error was from `D:\meal40\meal-backend` with one generated migration. The edited workspace is `C:\Meal40\meal-40-backend`, which retains the original migration chain. Changes here do not automatically modify the D: checkout.
+The supplied error was from `D:\meal40\meal-backend` with one generated migration. The edited workspace is `C:\Meal40\meal-40-backend`. Changes here do not automatically modify the D: checkout.
 
 1. Copy the corrected `libs/database/src/entities/deliveries/delivery.entity.ts` into the checkout where you generate migrations.
 2. Preserve the failed generated file outside the migration discovery folder for reference. Only replace a failed/unapplied generated baseline, never an applied migration.
 3. Generate the replacement baseline against a genuinely empty, separate test database. A failed MySQL schema migration can leave earlier tables behind despite ROLLBACK; do not generate a baseline against that partial schema.
-4. Check the generated column uses `DECIMAL(20,0)` and does not contain `STORED UNSIGNED`.
+4. Check the generated column uses `DECIMAL(20,0)`, does not contain `STORED UNSIGNED`, and its base-column foreign key uses RESTRICT for deletion and updates.
 5. Review the complete schema and migration list, then run the replacement migration against the empty test database.
 
 ```powershell
@@ -41,6 +56,6 @@ These commands are instructions, not commands executed for this fix. No database
 
 Deleting all migrations also removes custom SQL and seed data that entity generation cannot reconstruct. The previous migrations contain restaurant availability and merchant offer audit tables, search FULLTEXT indexes, a worker index, category seeds and email templates, among other changes. A generated baseline alone may run successfully yet leave application features broken.
 
-Prefer the retained original chain plus the forward fix for a new database. If intentionally consolidating migrations in the other checkout, explicitly carry over the custom schema and seed operations into the new baseline or supplemental migrations. Do not run the full original chain alongside a generated full baseline: they both create the same tables.
+When consolidating migrations, explicitly carry over the custom schema and seed operations from version control or backups into the new baseline or supplemental migrations. Do not run the full original chain alongside a generated full baseline: they both create the same tables.
 
 Reference: [TypeORM 0.3.27 MySQL query builder](https://github.com/typeorm/typeorm/blob/0.3.27/src/driver/mysql/MysqlQueryRunner.ts), `buildCreateColumnSql`.
