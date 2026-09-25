@@ -6,7 +6,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { verify } from 'argon2';
+import { ConfigService } from '@nestjs/config';
+import { openDeliveryOtp, sealDeliveryOtp } from '@app/common';
+import { randomInt } from 'node:crypto';
+import { enqueueEvent } from '../realtime/outbox.js';
+import { hash, verify } from 'argon2';
 import { DataSource, In, Repository } from 'typeorm';
 import {
   DeliveryPartnerApprovalStatus,
@@ -17,7 +21,10 @@ import {
   OrderStatus,
   SOCKET_EVENT,
   UserStatus,
+  PaymentMethod,
+  PaymentStatus,
   VerificationStatus,
+  JobStatus,
 } from '@app/contracts';
 import {
   DeliveryEarningEntity,
@@ -29,6 +36,7 @@ import {
   OrderItemEntity,
   OrderStatusHistoryEntity,
   UserEntity,
+  BackgroundJobEntity,
 } from '@app/database';
 import { RealtimeGateway } from '../realtime/realtime.gateway.js';
 import { OrderStateService } from '../orders/services/order-state.service.js';
@@ -47,6 +55,7 @@ export class DeliveryService {
   private readonly logger = new Logger(DeliveryService.name);
 
   constructor(
+    private readonly config: ConfigService,
     private readonly dataSource: DataSource,
     @InjectRepository(DeliveryPartnerEntity)
     private readonly partners: Repository<DeliveryPartnerEntity>,
@@ -77,8 +86,11 @@ export class DeliveryService {
 
   async setOnline(userId: number, isOnline: boolean) {
     const partner = await this.approvedPartner(userId);
+    return this.dataSource.transaction(async manager => {
+    const current = await manager.findOneOrFail(DeliveryPartnerEntity, { where: { id: partner.id }, lock: { mode: 'pessimistic_write' } });
+    if (current.approvalStatus !== DeliveryPartnerApprovalStatus.APPROVED) throw new ForbiddenException('Partner is not approved');
     if (!isOnline) {
-      const active = await this.deliveries.exists({
+      const active = await manager.exists(DeliveryEntity, {
         where: {
           deliveryPartnerId: partner.id,
           status: In(ACTIVE_DELIVERY_STATUSES),
@@ -89,8 +101,9 @@ export class DeliveryService {
           'Complete the active delivery before going offline',
         );
     }
-    partner.isOnline = isOnline;
-    return this.partners.save(partner);
+    current.isOnline = isOnline;
+    return manager.save(current);
+    });
   }
 
   async available(userId: number) {
@@ -103,11 +116,13 @@ export class DeliveryService {
       },
       order: { createdAt: 'ASC' },
     });
-    return this.withItems(
-      deliveries.filter(
-        (delivery) => !delivery.rejectedPartnerIds?.includes(partner.id),
-      ),
-    );
+    // Before assignment expose only pickup and offer economics, never customer PII.
+    return deliveries.filter(delivery => !delivery.rejectedPartnerIds?.some(id => Number(id) === Number(partner.id))).map(delivery => ({
+      id: delivery.id, orderId: delivery.orderId, status: delivery.status, deliveryPartnerId: null,
+      distanceKm: delivery.distanceKm, deliveryFee: delivery.deliveryFee, estimatedMinutes: delivery.estimatedMinutes,
+      order: { id: delivery.order.id, orderNumber: delivery.order.orderNumber, restaurantId: delivery.order.restaurantId,
+        restaurant: { name: delivery.order.restaurant.name, addressLine1: delivery.order.restaurant.addressLine1, city: delivery.order.restaurant.city, state: delivery.order.restaurant.state, latitude: delivery.order.restaurant.latitude, longitude: delivery.order.restaurant.longitude } },
+    }));
   }
 
   async active(userId: number) {
@@ -179,6 +194,11 @@ export class DeliveryService {
     if (!partner.isOnline)
       throw new ForbiddenException('Go online before accepting deliveries');
     const delivery = await this.dataSource.transaction(async (manager) => {
+      const lockedPartner = await manager.findOneOrFail(DeliveryPartnerEntity, { where: { id: partner.id }, lock: { mode: 'pessimistic_write' } });
+      if (!lockedPartner.isOnline || lockedPartner.approvalStatus !== DeliveryPartnerApprovalStatus.APPROVED) throw new ForbiddenException('Partner is not available');
+      const alreadyAssigned = await manager.findOne(DeliveryEntity, { where: { id: deliveryId, deliveryPartnerId: partner.id } });
+      if (alreadyAssigned) return alreadyAssigned;
+      if (await manager.exists(DeliveryEntity, { where: { deliveryPartnerId: partner.id, status: In(ACTIVE_DELIVERY_STATUSES) } })) throw new BadRequestException('Finish your active delivery before accepting another');
       const locked = await manager
         .createQueryBuilder(DeliveryEntity, 'delivery')
         .setLock('pessimistic_write')
@@ -192,8 +212,8 @@ export class DeliveryService {
         throw new BadRequestException(ErrorCode.DELIVERY_ALREADY_ASSIGNED);
       if (locked.rejectedPartnerIds?.includes(partner.id))
         throw new ForbiddenException('You rejected this delivery');
-      const order = await manager.findOneByOrFail(OrderEntity, {
-        id: locked.orderId,
+      const order = await manager.findOneOrFail(OrderEntity, {
+        where: { id: locked.orderId }, lock: { mode: 'pessimistic_write' },
       });
       this.assertOrderTransition(order.orderStatus, OrderStatus.ASSIGNED);
       locked.deliveryPartnerId = partner.id;
@@ -201,6 +221,7 @@ export class DeliveryService {
       locked.assignedAt = new Date();
       await manager.save(DeliveryEntity, locked);
       await this.transitionOrder(manager, order, OrderStatus.ASSIGNED, userId);
+      await enqueueEvent(manager, 'user', userId, SOCKET_EVENT.DELIVERY_UPDATED, { deliveryId: locked.id });
       return locked;
     });
     return this.emit(delivery, await this.orderForDelivery(delivery));
@@ -208,17 +229,19 @@ export class DeliveryService {
 
   async reject(userId: number, deliveryId: number) {
     const partner = await this.approvedPartner(userId);
-    const delivery = await this.deliveries.findOneBy({
+    return this.dataSource.transaction(async manager => {
+    const delivery = await manager.findOne(DeliveryEntity, { where: {
       id: deliveryId,
       status: DeliveryStatus.AVAILABLE,
-    });
+    }, lock: { mode: 'pessimistic_write' } });
     if (!delivery)
       throw new NotFoundException(ErrorCode.DELIVERY_NOT_AVAILABLE);
     delivery.rejectedPartnerIds = [
       ...new Set([...(delivery.rejectedPartnerIds ?? []), partner.id]),
     ];
-    await this.deliveries.save(delivery);
+    await manager.save(delivery);
     return { rejected: true };
+    });
   }
 
   arriveMerchant(userId: number, id: number) {
@@ -261,19 +284,13 @@ export class DeliveryService {
       DeliveryStatus.ARRIVED_AT_CUSTOMER,
       'arrivedCustomerAt',
     );
-    // Fire-and-forget: send OTP to customer via email & SMS
-    this.sendDeliveryOtpNotifications(result.delivery as DeliveryEntity).catch(
-      (err: unknown) =>
-        this.logger.warn(`Delivery OTP notification failed: ${String(err)}`),
-    );
     return result;
   }
 
   /**
-   * Look up the plain-text OTP stored in the in-app notification and
-   * re-deliver it to the customer via email (and SMS when available).
+   * Called by the durable worker. Decrypt only for this delivery's customer.
    */
-  private async sendDeliveryOtpNotifications(
+  async sendDeliveryOtpNotifications(
     delivery: DeliveryEntity,
   ): Promise<void> {
     // Fetch the order to know the customer
@@ -287,23 +304,10 @@ export class DeliveryService {
 
     const customer = order.customer;
 
-    // The OTP plain-text is saved in NotificationEntity.data.otp
-    const otpNotification = await this.notifications.findOne({
-      where: {
-        userId: order.customerId,
-        type: NotificationType.DELIVERY_OTP,
-      },
-      order: { createdAt: 'DESC' },
-    });
-    
-    this.logger.log(`Found OTP Notification: ${JSON.stringify(otpNotification)}`);
-    
-    // Safely parse data in case TypeORM returns it as a string
-    const data = typeof otpNotification?.data === 'string' 
-      ? JSON.parse(otpNotification.data) 
-      : otpNotification?.data;
-      
-    const otp = data?.['otp'] as string | undefined;
+    const secret = await this.deliveries.createQueryBuilder('delivery').addSelect('delivery.otpCiphertext')
+      .where('delivery.id = :id', { id: delivery.id }).getOne();
+    const otp = secret?.otpCiphertext && secret.otpExpiresAt && secret.otpExpiresAt > new Date()
+      ? openDeliveryOtp(secret.otpCiphertext, this.config.get<string>('DELIVERY_OTP_SECRET') || this.config.getOrThrow<string>('jwt.accessSecret')) : undefined;
     if (!otp) {
       this.logger.warn(
         `No OTP notification found for order ${order.id} — skipping email/SMS`,
@@ -315,9 +319,7 @@ export class DeliveryService {
 
     // ── Email ──────────────────────────────────────────────────────────────────
     if (customer.email) {
-      this.logger.log(`Sending delivery OTP to ${customer.email} for order ${orderNumber}...`);
-      await this.emailNotifications
-        .send({
+      await this.emailNotifications.send({
           to: customer.email,
           templateKey: 'DELIVERY_OTP',
           variables: {
@@ -325,42 +327,27 @@ export class DeliveryService {
             otp,
             orderNumber,
           },
-        })
-        .then(() => this.logger.log(`Email successfully sent to ${customer.email}`))
-        .catch((err: unknown) =>
-          this.logger.error(
-            `Delivery OTP email failed for ${customer.email}: ${String(err)}`,
-          ),
-        );
+        });
     } else {
       this.logger.warn(`Customer ${customer.id} has no email address`);
     }
 
-    // ── SMS ────────────────────────────────────────────────────────────────────
-    // Log the SMS for now; wire a real SmsProvider (e.g. Twilio) here when ready.
-    if (customer.phone) {
-      this.logger.log(
-        `[SMS] To: ${customer.phone} | Your delivery OTP for order ${orderNumber} is ${otp}. Share it only after receiving your order.`,
-      );
-      // TODO: replace the log above with an actual SmsProvider.send() call:
-      // await this.smsProvider.send({
-      //   to: customer.phone,
-      //   message: `Your delivery OTP for order ${orderNumber} is ${otp}. Share it only after receiving your order.`,
-      // });
-    }
   }
 
-  async complete(userId: number, id: number, otp: string) {
+  async complete(userId: number, id: number, otp: string, cashCollected = false) {
     const partner = await this.partner(userId);
-    const delivery = await this.deliveries
+    const result = await this.dataSource.transaction(async manager => {
+    const delivery = await manager.getRepository(DeliveryEntity)
       .createQueryBuilder('delivery')
       .addSelect('delivery.otpHash')
+      .setLock('pessimistic_write')
       .where('delivery.id = :id', { id })
       .andWhere('delivery.deliveryPartnerId = :partnerId', {
         partnerId: partner.id,
       })
       .getOne();
     if (!delivery) throw new NotFoundException('Delivery not found');
+    if (delivery.status === DeliveryStatus.DELIVERED) return { delivery, order: await manager.findOneByOrFail(OrderEntity, { id: delivery.orderId }), invalidOtp: false };
     if (delivery.status !== DeliveryStatus.ARRIVED_AT_CUSTOMER)
       throw new BadRequestException(
         'Mark arrival at the customer before delivery',
@@ -371,23 +358,23 @@ export class DeliveryService {
       throw new BadRequestException(ErrorCode.OTP_ATTEMPTS_EXCEEDED);
     if (!delivery.otpHash || !(await verify(delivery.otpHash, otp))) {
       delivery.otpAttempts += 1;
-      await this.deliveries.save(delivery);
-      throw new BadRequestException(ErrorCode.OTP_INVALID);
+      await manager.save(delivery);
+      return { delivery, order: null, invalidOtp: true };
     }
-    const order = await this.orderForDelivery(delivery);
-    await this.orderStates.transition(
-      order,
-      OrderStatus.DELIVERED,
-      userId,
-      'Delivery OTP verified',
-    );
+    const order = await manager.findOneOrFail(OrderEntity, { where: { id: delivery.orderId }, lock: { mode: 'pessimistic_write' } });
+    this.assertOrderTransition(order.orderStatus, OrderStatus.DELIVERED);
+    if (order.paymentMethod === PaymentMethod.COD && !cashCollected) throw new BadRequestException('Confirm cash collection before completing this COD delivery');
+    order.deliveredAt = new Date();
+    if (order.paymentMethod === PaymentMethod.COD) order.paymentStatus = PaymentStatus.PAID;
+    await this.transitionOrder(manager, order, OrderStatus.DELIVERED, userId);
     delivery.status = DeliveryStatus.DELIVERED;
     delivery.deliveredAt = new Date();
-    await this.deliveries.save(delivery);
+    delivery.otpHash = null; delivery.otpCiphertext = null; delivery.lastLocation = null;
+    await manager.save(delivery);
     const base = 30;
     const distance = Number(delivery.distanceKm) * 5;
-    await this.earningsRepo.save(
-      this.earningsRepo.create({
+    await manager.save(DeliveryEarningEntity,
+      manager.create(DeliveryEarningEntity, {
         deliveryId: delivery.id,
         deliveryPartnerId: partner.id,
         baseAmount: base.toFixed(2),
@@ -396,14 +383,22 @@ export class DeliveryService {
         totalAmount: (base + distance).toFixed(2),
       }),
     );
-    return this.emit(delivery, order);
+    await enqueueEvent(manager, 'user', order.customerId, SOCKET_EVENT.ORDER_DELIVERED, { id: order.id });
+    await enqueueEvent(manager, 'user', userId, SOCKET_EVENT.DELIVERY_UPDATED, { deliveryId: delivery.id });
+    await enqueueEvent(manager, 'restaurant', order.restaurantId, SOCKET_EVENT.DELIVERY_UPDATED, { id: order.id });
+    await enqueueEvent(manager, 'admin', null, SOCKET_EVENT.DELIVERY_UPDATED, { id: order.id });
+    return { delivery, order, invalidOtp: false };
+    });
+    if (result.invalidOtp) throw new BadRequestException(ErrorCode.OTP_INVALID);
+    const { otpHash: _hash, otpCiphertext: _cipher, ...safeDelivery } = result.delivery;
+    return { delivery: safeDelivery, order: result.order };
   }
 
   async cancel(userId: number, id: number) {
     const partner = await this.partner(userId);
-    const delivery = await this.deliveries.findOneBy({
-      id,
-      deliveryPartnerId: partner.id,
+    const result = await this.dataSource.transaction(async manager => {
+    const delivery = await manager.findOne(DeliveryEntity, {
+      where: { id, deliveryPartnerId: partner.id }, lock: { mode: 'pessimistic_write' },
     });
     if (!delivery) throw new NotFoundException('Delivery not found');
     if (
@@ -414,17 +409,18 @@ export class DeliveryService {
         `Cannot cancel a ${delivery.status} delivery`,
       );
 
-    const order = await this.orderForDelivery(delivery);
-    await this.orderStates.transition(
-      order,
-      OrderStatus.CANCELLED,
-      userId,
-      'Cancelled by delivery partner',
-    );
+    const order = await manager.findOneOrFail(OrderEntity, { where: { id: delivery.orderId }, lock: { mode: 'pessimistic_write' } });
+    this.assertOrderTransition(order.orderStatus, OrderStatus.CANCELLED);
+    order.cancelledAt = new Date(); order.cancellationReason = 'Cancelled by delivery partner';
+    await this.transitionOrder(manager, order, OrderStatus.CANCELLED, userId);
 
     delivery.status = DeliveryStatus.CANCELLED;
-    await this.deliveries.save(delivery);
-    return this.emit(delivery, order);
+    delivery.otpCiphertext = null; delivery.otpHash = null; delivery.lastLocation = null;
+    await manager.save(delivery);
+    await enqueueEvent(manager, 'user', userId, SOCKET_EVENT.DELIVERY_UPDATED, { deliveryId: delivery.id });
+    return { delivery, order };
+    });
+    return this.emit(result.delivery, result.order);
   }
 
   async listAdmin() {
@@ -530,22 +526,42 @@ export class DeliveryService {
     orderStatus?: OrderStatus,
   ) {
     const partner = await this.partner(userId);
-    const delivery = await this.deliveries.findOneBy({
-      id,
-      deliveryPartnerId: partner.id,
+    const result = await this.dataSource.transaction(async manager => {
+    const delivery = await manager.findOne(DeliveryEntity, {
+      where: { id, deliveryPartnerId: partner.id }, lock: { mode: 'pessimistic_write' },
     });
     if (!delivery) throw new NotFoundException('Delivery not found');
+    const order = await manager.findOneOrFail(OrderEntity, { where: { id: delivery.orderId }, lock: { mode: 'pessimistic_write' } });
+    if (delivery.status === to) return { delivery, order };
     if (delivery.status !== from)
       throw new BadRequestException(
         `Cannot move delivery from ${delivery.status} to ${to}`,
       );
-    const order = await this.orderForDelivery(delivery);
-    if (orderStatus)
-      await this.orderStates.transition(order, orderStatus, userId);
+    if (orderStatus) {
+      this.assertOrderTransition(order.orderStatus, orderStatus);
+      if (orderStatus === OrderStatus.OUT_FOR_DELIVERY) order.outForDeliveryAt = new Date();
+      await this.transitionOrder(manager, order, orderStatus, userId);
+    }
     delivery.status = to;
     delivery[timestamp] = new Date();
-    await this.deliveries.save(delivery);
-    return this.emit(delivery, order);
+    if (to === DeliveryStatus.ARRIVED_AT_CUSTOMER) {
+      const code = String(randomInt(100000, 1000000));
+      delivery.otpHash = await hash(code);
+      delivery.otpCiphertext = sealDeliveryOtp(code, this.config.get<string>('DELIVERY_OTP_SECRET') || this.config.getOrThrow<string>('jwt.accessSecret'));
+      delivery.otpExpiresAt = new Date(Date.now() + 30 * 60000);
+      delivery.otpAttempts = 0;
+    }
+    await manager.save(delivery);
+    if (to === DeliveryStatus.ARRIVED_AT_CUSTOMER) await manager.save(BackgroundJobEntity, manager.create(BackgroundJobEntity, {
+      type: 'delivery-otp-email', payload: { deliveryId: delivery.id }, status: JobStatus.PENDING,
+      attempts: 0, maxAttempts: 5, availableAt: new Date(),
+    }));
+    await enqueueEvent(manager, 'user', userId, SOCKET_EVENT.DELIVERY_UPDATED, { deliveryId: delivery.id });
+    await enqueueEvent(manager, 'user', order.customerId, SOCKET_EVENT.DELIVERY_UPDATED, { id: order.id });
+    await enqueueEvent(manager, 'restaurant', order.restaurantId, SOCKET_EVENT.DELIVERY_UPDATED, { id: order.id });
+    return { delivery, order };
+    });
+    return this.emit(result.delivery, result.order);
   }
 
   private async partner(userId: number) {
@@ -561,6 +577,7 @@ export class DeliveryService {
   private async withItems(deliveries: DeliveryEntity[]) {
     await Promise.all(
       deliveries.map(async (delivery) => {
+        if (delivery.order.addressSnapshot) delivery.order.address = { ...delivery.order.address, ...delivery.order.addressSnapshot };
         (delivery.order as OrderEntity & { items: OrderItemEntity[] }).items =
           await this.orderItems.findBy({ orderId: delivery.orderId });
       }),
@@ -584,32 +601,10 @@ export class DeliveryService {
   }
 
   private emit(delivery: DeliveryEntity, order?: OrderEntity) {
+    delete (delivery as Partial<DeliveryEntity>).otpHash;
+    delete (delivery as Partial<DeliveryEntity>).otpCiphertext;
     const payload = { delivery, order };
-    if (delivery.deliveryPartnerId) {
-      this.partners
-        .findOneBy({ id: delivery.deliveryPartnerId })
-        .then((partner) => {
-          if (partner)
-            this.realtime.emitToUser(
-              partner.userId,
-              SOCKET_EVENT.DELIVERY_UPDATED,
-              payload,
-            );
-        });
-    }
-    if (order) {
-      this.realtime.emitToUser(
-        order.customerId,
-        SOCKET_EVENT.DELIVERY_UPDATED,
-        payload,
-      );
-      this.realtime.emitToRestaurant(
-        order.restaurantId,
-        SOCKET_EVENT.DELIVERY_UPDATED,
-        payload,
-      );
-      this.realtime.emitToAdmin(SOCKET_EVENT.DELIVERY_UPDATED, payload);
-    }
+    // Events are published by the transactional outbox, never a detached promise.
     return payload;
   }
 
@@ -639,5 +634,8 @@ export class DeliveryService {
         note: null,
       }),
     );
+    await enqueueEvent(manager, 'user', order.customerId, `order.${to.toLowerCase()}`, { id: order.id });
+    await enqueueEvent(manager, 'restaurant', order.restaurantId, SOCKET_EVENT.DELIVERY_UPDATED, { id: order.id });
+    await enqueueEvent(manager, 'admin', null, SOCKET_EVENT.DELIVERY_UPDATED, { id: order.id });
   }
 }

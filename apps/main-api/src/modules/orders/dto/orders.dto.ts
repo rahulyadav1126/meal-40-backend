@@ -9,6 +9,8 @@ import {
   Min,
 } from 'class-validator';
 export class CreateOrderDto {
+  @IsOptional() @IsString() @MaxLength(50) couponCode?: string;
+  @IsOptional() @IsString() @MaxLength(100) quoteToken?: string;
   @Type(() => Number) @IsInt() @Min(1) cartId: number;
   @Type(() => Number) @IsInt() @Min(1) addressId: number;
   @Type(() => Number) @IsInt() @Min(1) @IsOptional() couponId?: number;

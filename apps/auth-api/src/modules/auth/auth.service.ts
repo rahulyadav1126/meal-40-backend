@@ -218,7 +218,7 @@ export class AuthService {
     if (
       !user ||
       !(await verify(user.passwordHash, dto.password)) ||
-      user.status !== UserStatus.ACTIVE
+      user.status !== UserStatus.ACTIVE || !user.isActive
     )
       throw new UnauthorizedException(ErrorCode.INVALID_CREDENTIALS);
     user.lastLoginAt = new Date();
@@ -231,14 +231,17 @@ export class AuthService {
     try {
       payload = await this.jwt.verifyAsync<RefreshPayload>(refreshToken, {
         secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
+        algorithms: ['HS256'],
       });
     } catch {
       throw new UnauthorizedException(ErrorCode.INVALID_REFRESH_TOKEN);
     }
     if (payload.type !== TOKEN_TYPE.REFRESH)
       throw new UnauthorizedException(ErrorCode.INVALID_REFRESH_TOKEN);
-    const session = await this.sessions
+    const result = await this.dataSource.transaction(async manager => {
+    const session = await manager.getRepository(AuthSessionEntity)
       .createQueryBuilder('session')
+      .setLock('pessimistic_write')
       .addSelect('session.refreshTokenHash')
       .where('session.id = :id', { id: payload.sessionId })
       .andWhere('session.userId = :userId', { userId: payload.sub })
@@ -246,20 +249,28 @@ export class AuthService {
     if (
       !session ||
       session.revokedAt ||
-      session.expiresAt <= new Date() ||
-      !(await verify(session.refreshTokenHash, refreshToken))
+      session.expiresAt <= new Date()
     )
       throw new UnauthorizedException(ErrorCode.INVALID_REFRESH_TOKEN);
-    const user = await this.users.findOneBy({
+    if (!(await verify(session.refreshTokenHash, refreshToken))) {
+      // Commit revocation before returning an error on a reused/rotated token.
+      session.revokedAt = new Date();
+      await manager.save(session);
+      return null;
+    }
+    const user = await manager.findOneBy(UserEntity, {
       id: payload.sub,
       status: UserStatus.ACTIVE,
     });
-    if (!user) throw new UnauthorizedException(ErrorCode.INVALID_REFRESH_TOKEN);
+    if (!user || !user.isActive) throw new UnauthorizedException(ErrorCode.INVALID_REFRESH_TOKEN);
     const tokens = await this.signTokens(user, session.id);
     session.refreshTokenHash = await hash(tokens.refreshToken);
     session.expiresAt = this.refreshExpiry();
-    await this.sessions.save(session);
+    await manager.save(session);
     return { ...tokens, user: this.publicUser(user) };
+    });
+    if (!result) throw new UnauthorizedException(ErrorCode.INVALID_REFRESH_TOKEN);
+    return result;
   }
 
   private async createSession(
@@ -291,7 +302,7 @@ export class AuthService {
       expiresIn: this.config.getOrThrow<string>('jwt.accessExpiresIn') as never,
     });
     const refreshToken = await this.jwt.signAsync(
-      { ...payload, type: TOKEN_TYPE.REFRESH },
+      { ...payload, type: TOKEN_TYPE.REFRESH, jti: randomUUID() },
       {
         secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
         expiresIn: this.config.getOrThrow<string>(

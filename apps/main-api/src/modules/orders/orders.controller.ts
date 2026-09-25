@@ -1,5 +1,6 @@
 import {
   Body,
+  Headers,
   Controller,
   Get,
   Param,
@@ -22,11 +23,15 @@ import { OrdersService } from './services/orders.service.js';
 @Controller('orders')
 export class OrdersController {
   constructor(private readonly orders: OrdersService) {}
+  @Post('quote') quote(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreateOrderDto) {
+    return this.orders.create(user.sub, dto, undefined, true);
+  }
   @Post() create(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateOrderDto,
+    @Headers('idempotency-key') requestKey?: string,
   ) {
-    return this.orders.create(user.sub, dto);
+    return this.orders.create(user.sub, dto, requestKey);
   }
   @Get() list(@CurrentUser() user: AuthenticatedUser) {
     return this.orders.listCustomer(user.sub);
@@ -51,6 +56,9 @@ export class OrdersController {
 @Controller('merchant/orders')
 export class MerchantOrdersController {
   constructor(private readonly orders: OrdersService) {}
+  @Get(':id') get(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseIntPipe) id: number) {
+    return this.orders.merchantGet(user.sub, id);
+  }
   @Get() list(@CurrentUser() user: AuthenticatedUser) {
     return this.orders.merchantList(user.sub);
   }

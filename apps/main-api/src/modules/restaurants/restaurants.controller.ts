@@ -17,6 +17,7 @@ import {
   UpdateRestaurantDto,
 } from './dto/restaurant.dto.js';
 import { RestaurantsService } from './restaurants.service.js';
+import { AvailabilityDto } from './dto/availability.dto.js';
 
 @Public()
 @ApiTags('Restaurants')
@@ -36,6 +37,11 @@ export class RestaurantsController {
 @Controller('merchant/restaurants')
 export class MerchantRestaurantsController {
   constructor(private readonly service: RestaurantsService) {}
+  @Patch(':id/availability') availability(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AvailabilityDto,
+  ) { return this.service.updateAvailability(user.sub, id, dto); }
   @Get() list(@CurrentUser() user: AuthenticatedUser) {
     return this.service.merchantList(user.sub);
   }

@@ -86,7 +86,7 @@ export class DeliveryController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: DeliveryOtpDto,
   ) {
-    return this.delivery.complete(user.sub, id, dto.otp);
+    return this.delivery.complete(user.sub, id, dto.otp, dto.cashCollected);
   }
   @Post(':id/cancel') cancel(
     @CurrentUser() user: AuthenticatedUser,

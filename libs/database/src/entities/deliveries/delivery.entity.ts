@@ -17,7 +17,13 @@ import { BaseEntity } from '../shared/base.entity.js';
 @Entity(DATABASE_TABLE.DELIVERIES)
 @Index('uq_deliveries_order', ['orderId'], { unique: true })
 @Index('idx_deliveries_partner_status', ['deliveryPartnerId', 'status'])
+@Index('uq_deliveries_active_partner', ['activePartnerId'], { unique: true })
 export class DeliveryEntity extends BaseEntity {
+  @Column({ name: 'active_partner_id', type: 'bigint', unsigned: true, nullable: true, select: false, insert: false, update: false, generatedType: 'STORED', asExpression: "CASE WHEN status IN ('ASSIGNED','ARRIVED_AT_MERCHANT','PICKED_UP','OUT_FOR_DELIVERY','ARRIVED_AT_CUSTOMER') THEN delivery_partner_id ELSE NULL END" })
+  activePartnerId: number | null;
+  @Column({ name: 'last_location', type: 'json', nullable: true, select: false })
+  lastLocation: { latitude: number; longitude: number; accuracy: number; heading?: number; recordedAt: string; receivedAt: string } | null;
+  @Column({ name: 'otp_ciphertext', type: 'text', nullable: true, select: false }) otpCiphertext: string | null;
   @Column({ name: 'order_id', type: 'bigint', unsigned: true }) orderId: number;
   @OneToOne(() => OrderEntity, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'order_id' })

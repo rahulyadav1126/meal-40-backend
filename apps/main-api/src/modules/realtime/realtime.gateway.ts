@@ -10,6 +10,8 @@ import { Repository } from 'typeorm';
 import type { Server, Socket } from 'socket.io';
 import { SOCKET_ROOM, type JwtPayload, UserRole } from '@app/contracts';
 import { RestaurantEntity } from '@app/database';
+import { JwtStrategy } from '@app/auth';
+import { Interval } from '@nestjs/schedule';
 
 @WebSocketGateway()
 export class RealtimeGateway implements OnGatewayConnection {
@@ -18,6 +20,7 @@ export class RealtimeGateway implements OnGatewayConnection {
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly access: JwtStrategy,
     @InjectRepository(RestaurantEntity)
     private readonly restaurants: Repository<RestaurantEntity>,
   ) {}
@@ -25,9 +28,11 @@ export class RealtimeGateway implements OnGatewayConnection {
   async handleConnection(client: Socket) {
     try {
       const token = this.token(client);
-      const payload = await this.jwt.verifyAsync<JwtPayload>(token, {
+      const decoded = await this.jwt.verifyAsync<JwtPayload>(token, {
         secret: this.config.getOrThrow<string>('jwt.accessSecret'),
+        algorithms: ['HS256'],
       });
+      const payload = await this.access.validate(decoded);
       await client.join(`${SOCKET_ROOM.USER}:${payload.sub}`);
       if (payload.role === UserRole.ADMIN) await client.join(SOCKET_ROOM.ADMIN);
       if (payload.role === UserRole.MERCHANT) {
@@ -65,5 +70,16 @@ export class RealtimeGateway implements OnGatewayConnection {
     const value: unknown = client.handshake.auth.token;
     if (typeof value !== 'string') throw new Error('Missing token');
     return value.startsWith('Bearer ') ? value.slice(7) : value;
+  }
+  @Interval(30000)
+  async revalidateConnections() {
+    if (!this.server) return;
+    for (const client of this.server.sockets.sockets.values()) {
+      try {
+        const payload = await this.jwt.verifyAsync<JwtPayload>(this.token(client), { secret: this.config.getOrThrow<string>('jwt.accessSecret'), algorithms: ['HS256'] });
+        const current = await this.access.validate(payload);
+        if (current.role !== client.data.user?.role) client.disconnect(true);
+      } catch { client.disconnect(true); }
+    }
   }
 }

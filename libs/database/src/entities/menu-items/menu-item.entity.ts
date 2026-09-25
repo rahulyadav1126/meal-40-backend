@@ -9,6 +9,11 @@ import { SoftDeleteEntity } from '../shared/base.entity.js';
 @Index('idx_menu_category', ['categoryId'])
 @Unique('uq_menu_restaurant_slug', ['restaurantId', 'slug'])
 export class MenuItemEntity extends SoftDeleteEntity {
+  @Column({ name: 'discount_starts_at', type: 'datetime', nullable: true }) discountStartsAt: Date | null;
+  @Column({ name: 'discount_ends_at', type: 'datetime', nullable: true }) discountEndsAt: Date | null;
+  @Column({ name: 'sold_out_until', type: 'datetime', nullable: true }) soldOutUntil: Date | null;
+  @Column({ name: 'service_hours', type: 'json', nullable: true })
+  serviceHours: import('../../../../common/src/utils/availability.util.js').ServiceInterval[] | null;
   @Column({ type: 'char', length: 36, unique: true }) uuid: string;
   @Column({ name: 'restaurant_id', type: 'bigint', unsigned: true })
   restaurantId: number;

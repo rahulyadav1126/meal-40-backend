@@ -10,6 +10,11 @@ export class UsersService {
     @InjectRepository(UserEntity)
     private readonly users: Repository<UserEntity>,
   ) {}
+  async me(userId: number) {
+    const user = await this.users.findOneBy({ id: userId });
+    if (!user) throw new NotFoundException('User not found');
+    return { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role, status: user.status, createdAt: user.createdAt };
+  }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
     const user = await this.users.findOneBy({ id: userId });
@@ -23,6 +28,6 @@ export class UsersService {
 
     await this.users.save(user);
 
-    return user;
+    return this.me(userId);
   }
 }

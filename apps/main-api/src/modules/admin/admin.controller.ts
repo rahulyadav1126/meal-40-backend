@@ -27,6 +27,8 @@ import {
 import {
   AuditLogEntity,
   OrderEntity,
+  OrderItemEntity,
+  OrderStatusHistoryEntity,
   RestaurantEntity,
   UserEntity,
 } from '@app/database';
@@ -55,7 +57,13 @@ class AdminService {
     return this.users.find({ withDeleted: true, order: { createdAt: 'DESC' } });
   }
   listOrders() {
-    return this.orders.find({ order: { createdAt: 'DESC' } });
+    return this.orders.find({ order: { createdAt: 'DESC' }, relations: { restaurant: true } });
+  }
+  async order(id: number) {
+    const order = await this.orders.findOne({ where: { id }, relations: { restaurant: true } });
+    if (!order) throw new NotFoundException('Order not found');
+    return { ...order, items: await this.orders.manager.findBy(OrderItemEntity, { orderId: id }),
+      history: await this.orders.manager.find(OrderStatusHistoryEntity, { where: { orderId: id }, order: { createdAt: 'ASC' } }) };
   }
   async restaurant(
     actor: number,
@@ -232,6 +240,7 @@ class AdminController {
   @Get('orders') orders() {
     return this.admin.listOrders();
   }
+  @Get('orders/:id') order(@Param('id', ParseIntPipe) id: number) { return this.admin.order(id); }
   @Get('users') users() {
     return this.admin.listUsers();
   }

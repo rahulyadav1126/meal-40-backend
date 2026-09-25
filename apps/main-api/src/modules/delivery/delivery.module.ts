@@ -19,6 +19,9 @@ import {
   DeliveryController,
 } from './delivery.controller.js';
 import { DeliveryService } from './delivery.service.js';
+import { DeliveryNotificationsWorker } from './delivery-notifications.worker.js';
+import { TrackingController } from './tracking.controller.js';
+import { TrackingService } from './tracking.service.js';
 
 @Module({
   imports: [
@@ -37,7 +40,7 @@ import { DeliveryService } from './delivery.service.js';
     OrdersModule,
     RealtimeModule,
   ],
-  controllers: [DeliveryController, AdminDeliveryController],
-  providers: [DeliveryService],
+  controllers: [DeliveryController, AdminDeliveryController, TrackingController],
+  providers: [DeliveryService, DeliveryNotificationsWorker, TrackingService],
 })
 export class DeliveryModule {}

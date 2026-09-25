@@ -1,15 +1,19 @@
 import {
   ForbiddenException,
+  BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomInt, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
 import { hash } from 'argon2';
 import {
   DataSource,
+  In,
   LessThanOrEqual,
-  MoreThanOrEqual,
+  MoreThan,
   Repository,
 } from 'typeorm';
 import {
@@ -20,11 +24,13 @@ import {
   ORDER_NUMBER_PREFIX,
   OrderStatus,
   PaymentStatus,
+  PaymentMethod,
   RestaurantApprovalStatus,
   RestaurantOpeningStatus,
   SOCKET_EVENT,
 } from '@app/contracts';
-import { DomainException, haversineDistanceKm } from '@app/common';
+import { DomainException, haversineDistanceKm, restaurantAvailability, menuAvailability, sealDeliveryOtp, openDeliveryOtp, Money } from '@app/common';
+import { enqueueEvent } from '../../realtime/outbox.js';
 import {
   AddressEntity,
   CartEntity,
@@ -38,15 +44,22 @@ import {
   OrderItemEntity,
   OrderStatusHistoryEntity,
   RestaurantEntity,
+  UserEntity,
 } from '@app/database';
 import type { CreateOrderDto } from '../dto/orders.dto.js';
 import { OrderPricingService } from './order-pricing.service.js';
 import { OrderStateService } from './order-state.service.js';
 import { RealtimeGateway } from '../../realtime/realtime.gateway.js';
 
+export interface OrderQuote {
+  quoteToken: string; expiresAt: string; subtotal: string; dishSavings: string; discountAmount: string;
+  deliveryFee: string; platformFee: string; taxAmount: string; totalAmount: string;
+  couponCode: string | null; items: Array<{ id: number; name: string; quantity: number; unitPrice: string; totalPrice: string }>;
+}
 @Injectable()
 export class OrdersService {
   constructor(
+    private readonly config: ConfigService,
     private readonly dataSource: DataSource,
     @InjectRepository(OrderEntity)
     private readonly orders: Repository<OrderEntity>,
@@ -75,20 +88,15 @@ export class OrdersService {
       relations: { restaurant: true },
     });
     if (!order) throw new NotFoundException(ErrorCode.ORDER_NOT_FOUND);
-    const delivery = await this.deliveries.findOne({
-      where: { orderId: order.id },
-      relations: { deliveryPartner: { user: true } },
-    });
-    const otpNotifications = await this.notifications.find({
-      where: { userId: customerId, type: NotificationType.DELIVERY_OTP },
-      order: { createdAt: 'DESC' },
-      take: 20,
-    });
-    const otp = otpNotifications.find(
-      (notification) => Number(notification.data?.orderId) === Number(order.id),
-    )?.data?.otp;
+    const delivery = await this.deliveries.createQueryBuilder('delivery').addSelect('delivery.otpCiphertext')
+      .leftJoinAndSelect('delivery.deliveryPartner', 'partner').leftJoinAndSelect('partner.user', 'partnerUser')
+      .where('delivery.orderId = :id', { id: order.id }).getOne();
+    const otp = delivery?.otpCiphertext && delivery.otpExpiresAt && delivery.otpExpiresAt > new Date() && ![DeliveryStatus.DELIVERED, DeliveryStatus.CANCELLED].includes(delivery.status)
+      ? openDeliveryOtp(delivery.otpCiphertext, this.config.get<string>('DELIVERY_OTP_SECRET') || this.config.getOrThrow<string>('jwt.accessSecret')) : undefined;
     return {
       ...order,
+      items: await this.dataSource.getRepository(OrderItemEntity).findBy({ orderId: order.id }),
+      history: await this.dataSource.getRepository(OrderStatusHistoryEntity).find({ where: { orderId: order.id }, order: { createdAt: 'ASC' } }),
       delivery: delivery
         ? {
             id: delivery.id,
@@ -112,7 +120,7 @@ export class OrdersService {
     };
   }
   async merchantList(merchantId: number) {
-    return this.orders
+    const orders = await this.orders
       .createQueryBuilder('order')
       .innerJoin(
         RestaurantEntity,
@@ -122,10 +130,37 @@ export class OrdersService {
       .where('restaurant.merchantId = :merchantId', { merchantId })
       .orderBy('order.createdAt', 'DESC')
       .getMany();
+    const items = orders.length ? await this.dataSource.getRepository(OrderItemEntity).findBy({ orderId: In(orders.map(order => order.id)) }) : [];
+    return orders.map(order => ({ ...order, items: items.filter(item => Number(item.orderId) === Number(order.id)) }));
   }
 
-  async create(customerId: number, dto: CreateOrderDto): Promise<OrderEntity> {
+  async merchantGet(merchantId: number, id: number) {
+    const order = await this.orders.createQueryBuilder('o').innerJoinAndSelect('o.restaurant', 'restaurant')
+      .where('o.id = :id AND restaurant.merchantId = :merchantId', { id, merchantId }).getOne();
+    if (!order) throw new NotFoundException('Order not found');
+    return { ...order, items: await this.dataSource.getRepository(OrderItemEntity).findBy({ orderId: id }),
+      history: await this.dataSource.getRepository(OrderStatusHistoryEntity).find({ where: { orderId: id }, order: { createdAt: 'ASC' } }) };
+  }
+
+  create(customerId: number, dto: CreateOrderDto, requestKey?: string): Promise<OrderEntity>;
+  create(customerId: number, dto: CreateOrderDto, requestKey: undefined, quoteOnly: true): Promise<OrderQuote>;
+  async create(customerId: number, dto: CreateOrderDto, requestKey?: string, quoteOnly = false): Promise<OrderEntity | OrderQuote> {
+    if (dto.paymentMethod === PaymentMethod.ONLINE && this.config.get<string>('ONLINE_PAYMENTS_ENABLED') !== 'true') throw new BadRequestException('Online payments are not enabled. Choose cash on delivery.');
+    if (requestKey && !/^[A-Za-z0-9_-]{8,128}$/.test(requestKey)) throw new BadRequestException('Invalid idempotency key');
+    if (dto.couponId && dto.couponCode) throw new BadRequestException('Choose one offer');
+    const couponCode = dto.couponCode?.trim().toUpperCase() || undefined;
+    const requestTerms = [dto.cartId, dto.addressId, dto.paymentMethod, dto.couponId ?? null, dto.customerNote ?? null];
+    if (couponCode) requestTerms.push(couponCode);
+    const requestHash = createHash('sha256').update(JSON.stringify(requestTerms)).digest('hex');
     const order = await this.dataSource.transaction(async (manager) => {
+      await manager.findOneOrFail(UserEntity, { where: { id: customerId }, lock: { mode: 'pessimistic_write' } });
+      if (requestKey) {
+        const previous = await manager.getRepository(OrderEntity).createQueryBuilder('o').addSelect('o.requestHash').where('o.customerId = :customerId AND o.requestKey = :requestKey', { customerId, requestKey }).getOne();
+        if (previous) {
+          if (previous.requestHash !== requestHash) throw new ConflictException('Idempotency key was used for a different order');
+          delete (previous as Partial<OrderEntity>).requestHash; return previous;
+        }
+      }
       const cart = await manager.findOne(CartEntity, {
         where: { id: dto.cartId, userId: customerId },
         lock: { mode: 'pessimistic_write' },
@@ -135,8 +170,8 @@ export class OrdersService {
           ErrorCode.CART_EMPTY,
           'Cart not found or empty',
         );
-      const restaurant = await manager.findOneBy(RestaurantEntity, {
-        id: cart.restaurantId,
+      const restaurant = await manager.findOne(RestaurantEntity, {
+        where: { id: cart.restaurantId }, lock: { mode: 'pessimistic_write' },
       });
       if (!restaurant)
         throw new NotFoundException(ErrorCode.RESTAURANT_NOT_FOUND);
@@ -146,17 +181,16 @@ export class OrdersService {
           'Restaurant is not approved',
         );
       if (
-        restaurant.openingStatus !== RestaurantOpeningStatus.OPEN ||
-        !restaurant.isActive
+        !restaurantAvailability(restaurant).isAcceptingOrders
       )
         throw new DomainException(
           ErrorCode.RESTAURANT_CLOSED,
           'Restaurant is closed',
         );
-      const address = await manager.findOneBy(AddressEntity, {
+      const address = await manager.findOne(AddressEntity, { where: {
         id: dto.addressId,
         userId: customerId,
-      });
+      }, lock: { mode: 'pessimistic_write' } });
       if (!address) throw new NotFoundException('Address not found');
       const distance = haversineDistanceKm(
         {
@@ -168,8 +202,7 @@ export class OrdersService {
           longitude: Number(address.longitude),
         },
       );
-      console.log(distance);
-      if (distance > 3000)
+      if (!Number.isFinite(distance) || distance > Number(restaurant.deliveryRadiusKm))
         throw new DomainException(
           ErrorCode.DELIVERY_LOCATION_OUT_OF_RANGE,
           'Address is outside the restaurant delivery radius',
@@ -177,31 +210,33 @@ export class OrdersService {
       const cartItems = await manager.find(CartItemEntity, {
         where: { cartId: cart.id },
         relations: { menuItem: true },
+        order: { id: 'ASC' },
       });
       if (!cartItems.length)
         throw new DomainException(ErrorCode.CART_EMPTY, 'Cart is empty');
       for (const item of cartItems)
         if (
-          !item.menuItem.isAvailable ||
-          item.menuItem.restaurantId !== restaurant.id
+          !item.menuItem || !menuAvailability(item.menuItem, restaurant).isOrderable ||
+          Number(item.menuItem.restaurantId) !== Number(restaurant.id)
         )
           throw new DomainException(
             ErrorCode.MENU_ITEM_UNAVAILABLE,
             'One or more menu items are unavailable',
           );
-      const coupon = dto.couponId
-        ? await manager.findOneBy(CouponEntity, {
-            id: dto.couponId,
+      const coupon = dto.couponId || couponCode
+        ? await manager.findOne(CouponEntity, { where: {
+            ...(dto.couponId ? { id: dto.couponId } : { code: couponCode! }),
             isActive: true,
             startAt: LessThanOrEqual(new Date()),
-            expiresAt: MoreThanOrEqual(new Date()),
-          })
+            expiresAt: MoreThan(new Date()),
+          }, lock: { mode: 'pessimistic_write' } })
         : null;
-      if (dto.couponId && !coupon)
+      if ((dto.couponId || couponCode) && !coupon)
         throw new DomainException(
           ErrorCode.COUPON_EXPIRED,
           'Coupon is invalid or expired',
         );
+      if (coupon?.restaurantId && Number(coupon.restaurantId) !== Number(restaurant.id)) throw new BadRequestException('This offer belongs to another restaurant');
       if (coupon) await this.validateCouponUsage(manager, coupon, customerId);
       const price = this.pricing.calculate(
         cartItems.map((item) => ({
@@ -210,15 +245,31 @@ export class OrdersService {
         })),
         coupon,
       );
+      if (price.subtotal.isLessThan(Money.fromDecimal(restaurant.minimumOrderAmount))) throw new BadRequestException('Restaurant minimum order amount has not been met');
+      const items = price.items.map(item => ({ id: item.menuItem.id, name: item.menuItem.name, quantity: item.quantity, unitPrice: item.unitPrice.toDecimal(), totalPrice: item.total.toDecimal() }));
+      const dishSavings = price.items.reduce((sum, item) => sum.add(Money.fromDecimal(item.menuItem.price).subtract(item.unitPrice).multiply(item.quantity)), Money.fromDecimal(0)).toDecimal();
+      const summary = { subtotal: price.subtotal.toDecimal(), dishSavings, discountAmount: price.discount.toDecimal(), deliveryFee: price.deliveryFee.toDecimal(), platformFee: price.platformFee.toDecimal(), taxAmount: price.tax.toDecimal(), totalAmount: price.total.toDecimal(), couponCode: coupon?.code ?? null, items };
+      const expires = quoteOnly ? Date.now() + 300000 : Number(dto.quoteToken?.split('.')[0]);
+      const terms = JSON.stringify({ customerId, cartId: cart.id, address: [address.id, address.addressLine1, address.city, address.postalCode, address.latitude, address.longitude], paymentMethod: dto.paymentMethod, minimumOrderAmount: restaurant.minimumOrderAmount, couponVersion: coupon?.version ?? null, ...summary });
+      const signature = createHmac('sha256', this.config.getOrThrow<string>('jwt.accessSecret')).update(`${expires}:${terms}`).digest('hex');
+      if (quoteOnly) return { ...summary, quoteToken: `${expires}.${signature}`, expiresAt: new Date(expires).toISOString() };
+      if (dto.quoteToken) {
+        const supplied = dto.quoteToken.split('.')[1] ?? '';
+        if (!/^\d{13}\.[a-f0-9]{64}$/.test(dto.quoteToken) || expires <= Date.now() || expires > Date.now() + 300000 || !timingSafeEqual(Buffer.from(signature), Buffer.from(supplied))) throw new ConflictException('Prices or offer terms changed, or your quote expired. Refresh the total and confirm again.');
+      }
       const order = await manager.save(
         OrderEntity,
         manager.create(OrderEntity, {
           uuid: randomUUID(),
+          requestKey: requestKey ?? null,
+          requestHash: requestKey ? requestHash : null,
           orderNumber: this.orderNumber(),
           customerId,
           restaurantId: restaurant.id,
           addressId: address.id,
+          addressSnapshot: { addressLine1: address.addressLine1, addressLine2: address.addressLine2, city: address.city, state: address.state, postalCode: address.postalCode, latitude: address.latitude, longitude: address.longitude },
           couponId: coupon?.id ?? null,
+          offerSnapshot: { coupon: coupon ? { id: coupon.id, code: coupon.code, version: coupon.version, restaurantId: coupon.restaurantId, discountType: coupon.discountType, discountValue: coupon.discountValue, minimumOrderAmount: coupon.minimumOrderAmount, maximumDiscount: coupon.maximumDiscount, menuItemIds: coupon.menuItemIds, stackWithDishDiscount: coupon.stackWithDishDiscount, discountAmount: price.discount.toDecimal() } : null, dishSavings, items: price.items.map(item => ({ id: item.menuItem.id, basePrice: item.menuItem.price, chargedPrice: item.unitPrice.toDecimal(), quantity: item.quantity })) },
           subtotal: price.subtotal.toDecimal(),
           discountAmount: price.discount.toDecimal(),
           deliveryFee: price.deliveryFee.toDecimal(),
@@ -267,13 +318,11 @@ export class OrdersService {
           }),
         );
       await manager.delete(CartEntity, cart.id);
+      await enqueueEvent(manager, 'restaurant', order.restaurantId, SOCKET_EVENT.ORDER_CREATED, { id: order.id });
+      delete (order as Partial<OrderEntity>).requestKey;
+      delete (order as Partial<OrderEntity>).requestHash;
       return order;
     });
-    this.realtime.emitToRestaurant(
-      order.restaurantId,
-      SOCKET_EVENT.ORDER_CREATED,
-      order,
-    );
     return order;
   }
 
@@ -303,15 +352,15 @@ export class OrdersService {
     const restaurant = await this.restaurants.findOneBy({
       id: order.restaurantId,
     });
-    if (!restaurant || restaurant.merchantId !== merchantId)
+    if (!restaurant || Number(restaurant.merchantId) !== Number(merchantId))
       throw new ForbiddenException('Order does not belong to merchant');
     const updated = await this.states.transition(
       order,
       status,
       merchantId,
       note,
+      status === OrderStatus.READY ? (manager, order) => this.createDeliveryRequest(order, manager) : undefined,
     );
-    if (status === OrderStatus.READY) await this.createDeliveryRequest(updated);
     const events: Partial<Record<OrderStatus, string>> = {
       [OrderStatus.ACCEPTED]: SOCKET_EVENT.ORDER_ACCEPTED,
       [OrderStatus.REJECTED]: SOCKET_EVENT.ORDER_REJECTED,
@@ -325,26 +374,27 @@ export class OrdersService {
     return updated;
   }
 
-  private async createDeliveryRequest(order: OrderEntity) {
-    if (await this.deliveries.exists({ where: { orderId: order.id } })) return;
-    const detailed = await this.orders.findOne({
+  private async createDeliveryRequest(order: OrderEntity, manager: import('typeorm').EntityManager) {
+    if (await manager.exists(DeliveryEntity, { where: { orderId: order.id } })) return;
+    const detailed = await manager.findOne(OrderEntity, {
       where: { id: order.id },
       relations: { restaurant: true, address: true },
     });
     if (!detailed) return;
+    const dropoff = detailed.addressSnapshot ?? detailed.address;
     const distanceKm = haversineDistanceKm(
       {
         latitude: Number(detailed.restaurant.latitude),
         longitude: Number(detailed.restaurant.longitude),
       },
       {
-        latitude: Number(detailed.address.latitude),
-        longitude: Number(detailed.address.longitude),
+        latitude: Number(dropoff.latitude),
+        longitude: Number(dropoff.longitude),
       },
     );
     const otp = String(randomInt(100000, 1_000_000));
-    const delivery = await this.deliveries.save(
-      this.deliveries.create({
+    const delivery = await manager.save(DeliveryEntity,
+      manager.create(DeliveryEntity, {
         orderId: order.id,
         deliveryPartnerId: null,
         status: DeliveryStatus.AVAILABLE,
@@ -353,38 +403,36 @@ export class OrdersService {
         estimatedMinutes: Math.max(10, Math.ceil((distanceKm / 20) * 60)),
         rejectedPartnerIds: [],
         otpHash: await hash(otp),
+        otpCiphertext: sealDeliveryOtp(otp, this.config.get<string>('DELIVERY_OTP_SECRET') || this.config.getOrThrow<string>('jwt.accessSecret')),
         otpExpiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
         otpAttempts: 0,
       }),
     );
-    await this.notifications.save(
-      this.notifications.create({
+    await manager.save(NotificationEntity,
+      manager.create(NotificationEntity, {
         userId: order.customerId,
         type: NotificationType.DELIVERY_OTP,
         title: 'Your delivery OTP',
-        message: `Share OTP ${otp} with your delivery partner only after receiving your order.`,
-        data: { orderId: order.id, deliveryId: delivery.id, otp },
+        message: 'Open your order to view the delivery code. Share it only after receiving your food.',
+        data: { orderId: order.id, deliveryId: delivery.id },
         isRead: false,
         readAt: null,
       }),
     );
-    const onlinePartners = await this.deliveryPartners.find({
+    const onlinePartners = await manager.find(DeliveryPartnerEntity, {
       where: {
         approvalStatus: DeliveryPartnerApprovalStatus.APPROVED,
         isOnline: true,
       },
     });
     for (const partner of onlinePartners)
-      this.realtime.emitToUser(
+      await enqueueEvent(manager, 'user',
         partner.userId,
         SOCKET_EVENT.DELIVERY_AVAILABLE,
         { deliveryId: delivery.id, orderId: order.id },
       );
-    this.realtime.emitToUser(order.customerId, SOCKET_EVENT.ORDER_READY, {
-      order,
-      deliveryOtp: otp,
-    });
-    this.realtime.emitToAdmin(SOCKET_EVENT.DELIVERY_AVAILABLE, delivery);
+    await enqueueEvent(manager, 'user', order.customerId, SOCKET_EVENT.ORDER_READY, { id: order.id });
+    await enqueueEvent(manager, 'admin', null, SOCKET_EVENT.DELIVERY_AVAILABLE, { deliveryId: delivery.id, orderId: order.id });
   }
 
   private async validateCouponUsage(

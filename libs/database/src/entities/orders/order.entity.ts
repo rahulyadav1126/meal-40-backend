@@ -14,7 +14,13 @@ import { UserEntity } from '../users/user.entity.js';
 @Entity(DATABASE_TABLE.ORDERS)
 @Index('idx_orders_customer_created', ['customerId', 'createdAt'])
 @Index('idx_orders_restaurant_status', ['restaurantId', 'orderStatus'])
+@Index('uq_orders_customer_request', ['customerId', 'requestKey'], { unique: true })
 export class OrderEntity extends BaseEntity {
+  @Column({ name: 'offer_snapshot', type: 'json', nullable: true }) offerSnapshot: Record<string, unknown> | null;
+  @Column({ name: 'address_snapshot', type: 'json', nullable: true })
+  addressSnapshot: Pick<AddressEntity, 'addressLine1' | 'addressLine2' | 'city' | 'state' | 'postalCode' | 'latitude' | 'longitude'> | null;
+  @Column({ name: 'request_key', type: 'varchar', length: 128, nullable: true, select: false }) requestKey: string | null;
+  @Column({ name: 'request_hash', type: 'char', length: 64, nullable: true, select: false }) requestHash: string | null;
   @Column({ type: 'char', length: 36, unique: true }) uuid: string;
   @Column({ name: 'order_number', type: 'varchar', length: 40, unique: true })
   orderNumber: string;

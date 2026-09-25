@@ -21,6 +21,7 @@ import { RestaurantsModule } from './modules/restaurants/restaurants.module.js';
 import { ReviewsModule } from './modules/reviews/reviews.module.js';
 import { DeliveryModule } from './modules/delivery/delivery.module.js';
 import { UsersModule } from './modules/users/users.module.js';
+import { OffersModule } from './modules/offers/offers.module.js';
 @Module({
   imports: [
     Plate40ConfigModule.forRoot(['.env.main', '.env']),
@@ -44,6 +45,7 @@ import { UsersModule } from './modules/users/users.module.js';
     ReviewsModule,
     DeliveryModule,
     UsersModule,
+    OffersModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

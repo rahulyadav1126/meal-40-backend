@@ -12,6 +12,10 @@ import { UserEntity } from '../users/user.entity.js';
 @Index('idx_restaurants_merchant', ['merchantId'])
 @Index('idx_restaurants_approval_active', ['approvalStatus', 'isActive'])
 export class RestaurantEntity extends SoftDeleteEntity {
+  @Column({ name: 'availability_settings', type: 'json', nullable: true })
+  availabilitySettings: import('../../../../common/src/utils/availability.util.js').AvailabilitySettings | null;
+  @Column({ name: 'availability_version', type: 'int', unsigned: true, default: 0 })
+  availabilityVersion: number;
   @Column({ type: 'char', length: 36, unique: true }) uuid: string;
   @Column({ name: 'merchant_id', type: 'bigint', unsigned: true })
   merchantId: number;

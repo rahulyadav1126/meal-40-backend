@@ -42,11 +42,10 @@ export class SessionsService {
   async revoke(sessionId: number, userId: number): Promise<void> {
     const session = await this.sessions.findOneBy({ id: sessionId });
     if (!session) throw new NotFoundException('Session not found');
-    if (session.userId !== userId)
+    if (Number(session.userId) !== Number(userId))
       throw new ForbiddenException('Cannot revoke another user session');
     if (!session.revokedAt) {
-      session.revokedAt = new Date();
-      await this.sessions.save(session);
+      await this.sessions.update({ id: sessionId, userId }, { revokedAt: new Date() });
     }
   }
 }

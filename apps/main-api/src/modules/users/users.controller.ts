@@ -1,4 +1,4 @@
-import { Body, Controller, Patch } from '@nestjs/common';
+import { Body, Controller, Patch, Get } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '@app/auth';
 import type { AuthenticatedUser } from '@app/contracts';
@@ -10,6 +10,7 @@ import { UsersService } from './users.service.js';
 @Controller('users')
 export class UsersController {
   constructor(private readonly users: UsersService) {}
+  @Get('me') me(@CurrentUser() user: AuthenticatedUser) { return this.users.me(user.sub); }
 
   @Patch('me')
   updateProfile(

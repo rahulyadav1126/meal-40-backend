@@ -7,7 +7,12 @@ import { BaseEntity } from '../shared/base.entity.js';
 
 @Entity(DATABASE_TABLE.COUPONS)
 @Index('idx_coupons_active_dates', ['isActive', 'startAt', 'expiresAt'])
+@Index('idx_coupons_restaurant_dates', ['restaurantId', 'isActive', 'startAt', 'expiresAt'])
 export class CouponEntity extends BaseEntity {
+  @Column({ name: 'restaurant_id', type: 'bigint', unsigned: true, nullable: true }) restaurantId: number | null;
+  @Column({ name: 'menu_item_ids', type: 'json', nullable: true }) menuItemIds: number[] | null;
+  @Column({ name: 'stack_with_dish_discount', default: true }) stackWithDishDiscount: boolean;
+  @Column({ type: 'int', unsigned: true, default: 0 }) version: number;
   @Column({ type: 'varchar', length: 50, unique: true }) code: string;
   @Column({ type: 'varchar', length: 500, nullable: true }) description:
     string | null;

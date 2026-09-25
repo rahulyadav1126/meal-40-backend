@@ -5,5 +5,8 @@ export * from './filters/http-exception.filter.js';
 export * from './interceptors/response.interceptor.js';
 export * from './utils/money.util.js';
 export * from './utils/location.util.js';
+export * from './utils/availability.util.js';
+export * from './utils/delivery-otp.util.js';
+export * from './utils/menu-price.util.js';
 export * from './bootstrap/bootstrap.js';
 export * from './logger/logger.module.js';
