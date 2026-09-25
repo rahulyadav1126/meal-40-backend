@@ -14,13 +14,39 @@ import { DeliveryPartnerEntity } from '../delivery-partners/delivery-partner.ent
 import { OrderEntity } from '../orders/order.entity.js';
 import { BaseEntity } from '../shared/base.entity.js';
 
+// Explicit subset: AVAILABLE and terminal states must not reserve a rider.
+const activePartnerStatuses: readonly DeliveryStatus[] = [
+  DeliveryStatus.ASSIGNED,
+  DeliveryStatus.ARRIVED_AT_MERCHANT,
+  DeliveryStatus.PICKED_UP,
+  DeliveryStatus.OUT_FOR_DELIVERY,
+  DeliveryStatus.ARRIVED_AT_CUSTOMER,
+];
+const activePartnerExpression = `CASE WHEN status IN (${activePartnerStatuses
+  .map((status) => `'${status.replace(/'/g, "''")}'`)
+  .join(',')}) THEN delivery_partner_id ELSE NULL END`;
+
 @Entity(DATABASE_TABLE.DELIVERIES)
 @Index('uq_deliveries_order', ['orderId'], { unique: true })
 @Index('idx_deliveries_partner_status', ['deliveryPartnerId', 'status'])
 @Index('uq_deliveries_active_partner', ['activePartnerId'], { unique: true })
 export class DeliveryEntity extends BaseEntity {
-  @Column({ name: 'active_partner_id', type: 'bigint', unsigned: true, nullable: true, select: false, insert: false, update: false, generatedType: 'STORED', asExpression: "CASE WHEN status IN ('ASSIGNED','ARRIVED_AT_MERCHANT','PICKED_UP','OUT_FOR_DELIVERY','ARRIVED_AT_CUSTOMER') THEN delivery_partner_id ELSE NULL END" })
-  activePartnerId: number | null;
+  // TypeORM's MySQL generator places UNSIGNED after AS (...) STORED, which is
+  // invalid SQL. DECIMAL(20,0) retains the full unsigned BIGINT ID range without
+  // that modifier. This is only an index helper, not the rider foreign key.
+  @Column({
+    name: 'active_partner_id',
+    type: 'decimal',
+    precision: 20,
+    scale: 0,
+    nullable: true,
+    select: false,
+    insert: false,
+    update: false,
+    generatedType: 'STORED',
+    asExpression: activePartnerExpression,
+  })
+  activePartnerId: string | null;
   @Column({ name: 'last_location', type: 'json', nullable: true, select: false })
   lastLocation: { latitude: number; longitude: number; accuracy: number; heading?: number; recordedAt: string; receivedAt: string } | null;
   @Column({ name: 'otp_ciphertext', type: 'text', nullable: true, select: false }) otpCiphertext: string | null;
